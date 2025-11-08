@@ -1,0 +1,5 @@
+{
+  "name": "AI Network Config Helper",
+  "description": "An AI-powered assistant for network engineers to generate, analyze, and compare Cisco device configurations using the Gemini API.",
+  "requestFramePermissions": []
+}

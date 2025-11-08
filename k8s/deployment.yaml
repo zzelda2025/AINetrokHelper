@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-network-config-helper
+  labels:
+    app: ai-network-config-helper
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai-network-config-helper
+  template:
+    metadata:
+      labels:
+        app: ai-network-config-helper
+    spec:
+      containers:
+      - name: ai-network-config-helper
+        # This image path is a placeholder and will be dynamically replaced
+        # by the Jenkins pipeline during the deployment stage.
+        image: your-docker-registry/ai-network-config-helper:latest
+        ports:
+        - containerPort: 80
