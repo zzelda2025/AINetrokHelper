@@ -6,14 +6,14 @@ pipeline {
     // Định nghĩa các biến môi trường
     environment {
         // Thay 'your-docker-registry' bằng username Docker Hub của bạn
-        DOCKER_REGISTRY_URL = 'your-docker-registry'
+        DOCKER_REGISTRY_URL = 'register.vinhthai.io.vn/'
         IMAGE_NAME = 'ai-network-config-helper'
         IMAGE_TAG = "${env.BUILD_NUMBER}" // Sử dụng số build làm tag
 
         // ID của credentials đã tạo
-        DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
-        KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-credentials'
-        GEMINI_API_KEY_ID = 'gemini-api-key'
+        DOCKER_CREDENTIALS_ID = 'DOCKER_CREDENTIALS_ID'
+        KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-k8s'
+        GEMINI_API_KEY_ID = 'AIzaSyBpIDnAg23UKwyT8PEKxOai5ruuuhiM2iQ'
     }
 
     // Các stage chính của pipeline
