@@ -8,105 +8,156 @@ Tài liệu này hướng dẫn cách thiết lập một pipeline CI/CD tự đ
 
 ### Yêu cầu
 
-Trước khi bắt đầu, bạn cần chuẩn bị:
+1.  **Jenkins Server**: Đã cài đặt các plugin: `Pipeline`, `Docker Pipeline`, `Kubernetes CLI`, `Credentials Binding`.
+2.  **Docker**: Cài đặt trên agent của Jenkins.
+3.  **Kubernetes Cluster**: Một cluster đang hoạt động (ví dụ: Minikube, GKE, EKS).
+4.  **`kubectl`**: Cài đặt trên agent của Jenkins và được cấu hình để kết nối tới cluster.
+5.  **Docker Registry**: Một tài khoản registry để lưu trữ Docker image (ví dụ: Docker Hub).
+6.  **Mã nguồn**: Lưu trữ trên Git.
 
-1.  **Jenkins Server**: Một Jenkins server đang hoạt động với các plugin sau được cài đặt:
-    *   `Pipeline`
-    *   `Docker Pipeline`
-    *   `Kubernetes CLI`
-    *   `Credentials Binding`
-2.  **Docker**: Docker phải được cài đặt trên agent của Jenkins (hoặc trên chính Jenkins server nếu agent là master).
-3.  **Kubernetes Cluster**: Một cluster Kubernetes đang hoạt động (ví dụ: Minikube, kind, GKE, EKS).
-4.  **`kubectl`**: `kubectl` phải được cài đặt trên agent của Jenkins và được cấu hình để kết nối tới cluster của bạn.
-5.  **Docker Registry**: Một tài khoản registry để lưu trữ Docker image (ví dụ: Docker Hub, Google Container Registry).
-6.  **Mã nguồn**: Mã nguồn của dự án được lưu trữ trên một hệ thống quản lý phiên bản như Git.
+---
 
-### Bước 1: Cấu hình Jenkins Credentials
+### Bước 1: Container hóa ứng dụng với Docker
 
-Bạn cần tạo hai credentials trong Jenkins để pipeline có thể xác thực với Docker Registry và Kubernetes Cluster.
+Để chạy ứng dụng trên Kubernetes, trước tiên chúng ta cần đóng gói nó vào một Docker image. Vì đây là một ứng dụng frontend tĩnh, chúng ta sẽ sử dụng Nginx để phục vụ các file.
 
-1.  **Docker Registry Credentials**:
-    *   Đi tới **Manage Jenkins** -> **Credentials**.
-    *   Chọn store và domain phù hợp, sau đó click **Add Credentials**.
+#### `Dockerfile`
+
+File `Dockerfile` sau đây sẽ tạo một image chứa Nginx và các file mã nguồn của ứng dụng.
+
+```dockerfile
+# Sử dụng image nginx:alpine gọn nhẹ làm image cuối cùng
+FROM nginx:1.25-alpine
+
+# Xóa file cấu hình mặc định của nginx
+RUN rm /etc/nginx/conf.d/default.conf
+
+# Sao chép file cấu hình nginx tùy chỉnh của chúng ta
+COPY nginx.conf /etc/nginx/conf.d/
+
+# Sao chép tất cả tài sản của ứng dụng từ thư mục hiện tại
+# vào thư mục public html của nginx.
+COPY . /usr/share/nginx/html
+
+# Mở cổng 80 ra bên ngoài
+EXPOSE 80
+
+# Lệnh để chạy nginx ở chế độ foreground
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+#### `nginx.conf`
+
+Chúng ta cần một file cấu hình Nginx (`nginx.conf`) để đảm bảo các request được định tuyến đúng cách cho một Single Page Application (SPA) và các file `.tsx` được phục vụ với đúng `Content-Type`.
+
+```nginx
+server {
+    listen 80;
+    server_name localhost;
+
+    # Thư mục gốc chứa các file tĩnh
+    root /usr/share/nginx/html;
+    # File mặc định để phục vụ
+    index index.html;
+
+    # Cấu hình định tuyến cho Single Page Application (SPA)
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Khai báo tường minh MIME type cho các file .tsx
+    types {
+      application/javascript ts tsx;
+    }
+}
+```
+
+---
+
+### Bước 2: Cấu hình Jenkins Credentials
+
+Bạn cần tạo ba loại credentials trong Jenkins.
+
+1.  **Docker Registry Credentials** (`docker-hub-credentials`):
     *   **Kind**: `Username with password`.
-    *   **Username**: Tên người dùng Docker Hub hoặc registry của bạn.
-    *   **Password**: Mật khẩu hoặc access token của bạn.
-    *   **ID**: `docker-hub-credentials` (Hoặc một ID khác, nhưng bạn phải cập nhật nó trong `Jenkinsfile`).
-    *   Lưu lại.
-
-2.  **Kubernetes `kubeconfig` Credentials**:
-    *   Đi tới **Manage Jenkins** -> **Credentials**.
-    *   Click **Add Credentials**.
+    *   **ID**: `docker-hub-credentials`.
+2.  **Kubernetes `kubeconfig` Credentials** (`kubeconfig-credentials`):
     *   **Kind**: `Secret file`.
-    *   **File**: Tải lên file `kubeconfig` của bạn. File này thường nằm ở `~/.kube/config`.
-    *   **ID**: `kubeconfig-credentials` (Hoặc một ID khác, nhưng bạn phải cập nhật nó trong `Jenkinsfile`).
-    *   Lưu lại.
+    *   **File**: Tải lên file `~/.kube/config` của bạn.
+    *   **ID**: `kubeconfig-credentials`.
+3.  **Gemini API Key** (`gemini-api-key`):
+    *   **Kind**: `Secret text`.
+    *   **Secret**: Dán Gemini API key của bạn vào đây.
+    *   **ID**: `gemini-api-key`.
 
-### Bước 2: Cập nhật `Jenkinsfile`
+---
 
-File `Jenkinsfile` trong thư mục gốc của dự án định nghĩa các bước của pipeline. Bạn cần cập nhật một số biến môi trường ở đầu file:
+### Bước 3: Cập nhật `Jenkinsfile`
+
+Cập nhật các biến môi trường ở đầu file `Jenkinsfile` để khớp với thông tin của bạn.
 
 ```groovy
 environment {
     // Thay 'your-docker-registry' bằng username Docker Hub của bạn
-    // hoặc URL tới registry riêng của bạn.
     DOCKER_REGISTRY_URL = 'your-docker-registry'
+    IMAGE_NAME = 'ai-network-config-helper'
 
-    // ID của credentials Docker bạn đã tạo ở Bước 1.
+    // ID của credentials bạn đã tạo ở Bước 2
     DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
-
-    // ID của credentials kubeconfig bạn đã tạo ở Bước 1.
     KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-credentials'
-    // ...
+    GEMINI_API_KEY_ID = 'gemini-api-key'
 }
 ```
 
-### Bước 3: Tạo Pipeline Job trong Jenkins
+#### Xử lý API Key trong Pipeline
 
-1.  Trên giao diện Jenkins, click **New Item**.
-2.  Đặt tên cho job của bạn (ví dụ: `ai-network-helper-pipeline`).
-3.  Chọn **Pipeline** và click **OK**.
-4.  Trong phần cấu hình job, đi tới tab **Pipeline**.
-5.  **Definition**: Chọn `Pipeline script from SCM`.
-6.  **SCM**: Chọn `Git`.
-7.  **Repository URL**: Nhập URL của repository Git chứa mã nguồn của bạn.
-8.  **Branch Specifier**: `*/main` hoặc `*/master` tùy theo nhánh chính của bạn.
-9.  **Script Path**: Mặc định là `Jenkinsfile`. Giữ nguyên nếu file của bạn có tên này và nằm ở thư mục gốc.
-10. Click **Save**.
+Mã nguồn sử dụng `process.env.API_KEY` để lấy API key, nhưng biến này không tồn tại trong môi trường trình duyệt. **Bước quan trọng nhất** là pipeline CI/CD phải thay thế chuỗi này bằng key thật trước khi build Docker image.
 
-### Bước 4: Chạy Pipeline
+`Jenkinsfile` sẽ có một stage để thực hiện việc này bằng lệnh `sed`:
 
-Sau khi đã lưu job, click vào **Build Now** để kích hoạt pipeline. Jenkins sẽ thực hiện các bước sau:
+```groovy
+stage('Inject API Key') {
+    steps {
+        script {
+            // Thay thế 'process.env.API_KEY' bằng API key thật từ Jenkins Credentials
+            // trong file geminiService.ts.
+            sh "sed -i 's|process.env.API_KEY|\\\"${GEMINI_API_KEY}\\\"|g' services/geminiService.ts"
+        }
+    }
+}
+```
+Stage này phải được chạy **trước** stage 'Build Docker Image'.
 
-1.  **Checkout**: Lấy mã nguồn từ repository Git.
-2.  **Build Docker Image**: Build một Docker image từ `Dockerfile` của dự án. Image sẽ được tag với số build của Jenkins (ví dụ: `your-docker-registry/ai-network-config-helper:build-1`).
-3.  **Push Docker Image**: Đẩy image vừa build lên Docker Registry đã cấu hình.
-4.  **Deploy to Kubernetes**:
-    *   Sử dụng `kubectl` để kết nối tới cluster Kubernetes.
-    *   Cập nhật file `k8s/deployment.yaml` để sử dụng image mới nhất.
-    *   Áp dụng các manifest trong thư mục `k8s/` (`service.yaml` và `deployment.yaml`) để triển khai hoặc cập nhật ứng dụng.
+---
 
-### Bước 5: Xác minh triển khai
+### Bước 4: Tạo Pipeline Job trong Jenkins
 
-Sau khi pipeline hoàn tất thành công, bạn có thể kiểm tra trạng thái triển khai trên cluster Kubernetes.
+1.  Tạo một **New Item** mới, chọn **Pipeline**.
+2.  Trong tab **Pipeline**, cấu hình **Definition** là `Pipeline script from SCM`.
+3.  Chọn **Git** và nhập URL repository của bạn.
+4.  Lưu lại.
 
-1.  **Kiểm tra Pods**:
-    ```sh
-    kubectl get pods -l app=ai-network-config-helper
-    ```
-    Bạn sẽ thấy các pod đang ở trạng thái `Running`.
+### Bước 5: Chạy Pipeline và Xác minh
 
-2.  **Kiểm tra Service**:
-    ```sh
-    kubectl get service ai-network-config-helper-svc
-    ```
-    Bạn sẽ thấy service đã được tạo với loại là `ClusterIP`.
+1.  Click **Build Now** để chạy pipeline. Jenkins sẽ thực hiện các stage:
+    *   **Checkout**: Lấy mã nguồn.
+    *   **Inject API Key**: Thay thế placeholder API key.
+    *   **Build Docker Image**: Build image.
+    *   **Push Docker Image**: Đẩy image lên registry.
+    *   **Deploy to Kubernetes**: Áp dụng các file manifest trong thư mục `k8s/`.
 
-3.  **Truy cập ứng dụng**:
-    Vì service có loại là `ClusterIP`, nó chỉ có thể được truy cập từ bên trong cluster. Để truy cập từ máy local của bạn cho mục đích kiểm thử, bạn có thể sử dụng port-forwarding:
-    ```sh
-    kubectl port-forward svc/ai-network-config-helper-svc 8080:80
-    ```
-    Bây giờ, bạn có thể mở trình duyệt và truy cập vào `http://localhost:8080` để xem ứng dụng.
+2.  Sau khi pipeline thành công, xác minh trên Kubernetes:
+    *   **Kiểm tra Pods**:
+        ```sh
+        kubectl get pods -l app=ai-network-config-helper
+        ```
+        Bạn sẽ thấy các pod đang ở trạng thái `Running`.
 
-Chúc mừng! Bạn đã triển khai thành công ứng dụng AI Network Config Helper bằng pipeline CI/CD tự động.
+    *   **Truy cập ứng dụng**:
+        Service đang chạy với loại `ClusterIP`, chỉ có thể truy cập nội bộ. Để kiểm thử, hãy sử dụng port-forwarding:
+        ```sh
+        kubectl port-forward svc/ai-network-config-helper-svc 8080:80
+        ```
+        Bây giờ, mở trình duyệt và truy cập `http://localhost:8080` để xem ứng dụng.
+
+Chúc mừng! Bạn đã triển khai thành công ứng dụng bằng một pipeline CI/CD hoàn chỉnh.
