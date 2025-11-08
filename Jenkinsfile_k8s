@@ -1,0 +1,158 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_REGISTRY_URL = 'register.vinhthai.io.vn/vinhtechlab/ai-network-config-helper/'
+        IMAGE_NAME = 'ai-network-config-helper'
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        DOCKER_CREDENTIALS_ID = 'devops-k8s'
+        KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-k8s'
+        GEMINI_API_KEY_ID = 'gemini-api-key'
+        K8S_NAMESPACE = 'default' // Thay đổi namespace nếu cần
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "Lấy mã nguồn..."
+            }
+        }
+        
+        stage('Inject API Key') {
+            steps {
+                withCredentials([string(credentialsId: "${GEMINI_API_KEY_ID}", variable: 'GEMINI_API_KEY')]) {
+                    sh '''
+                        sed -i "s|process.env.API_KEY|\\"${GEMINI_API_KEY}\\"|g" services/geminiService.ts
+                    '''
+                }
+            }
+        }
+        
+        stage('Build and Push Docker Image') {
+            steps {
+                script {
+                    withCredentials([usernamePassword(
+                        credentialsId: "${DOCKER_CREDENTIALS_ID}",
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )]) {
+                        sh '''
+                            echo $DOCKER_PASS | docker login ${DOCKER_REGISTRY_URL} -u $DOCKER_USER --password-stdin
+                            
+                            docker build -t ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG} .
+                            docker tag ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG} ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:latest
+                            
+                            docker push ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG}
+                            docker push ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:latest
+                            
+                            docker logout ${DOCKER_REGISTRY_URL}
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Cleanup Old Resources') {
+            steps {
+                withCredentials([file(credentialsId: "${KUBECONFIG_CREDENTIALS_ID}", variable: 'KUBECONFIG')]) {
+                    sh '''
+                        export KUBECONFIG=${KUBECONFIG}
+                        
+                        echo "=== Kiểm tra và xóa các resources cũ ==="
+                        
+                        # Lấy danh sách các file YAML trong thư mục k8s
+                        for file in k8s/*.yaml k8s/*.yml; do
+                            if [ -f "$file" ]; then
+                                echo "Xử lý file: $file"
+                                
+                                # Kiểm tra loại resource trong file
+                                kind=$(grep -E "^kind:" "$file" | awk '{print $2}' | tr -d '\\r')
+                                name=$(grep -E "^  name:" "$file" | head -1 | awk '{print $2}' | tr -d '\\r')
+                                
+                                if [ ! -z "$kind" ] && [ ! -z "$name" ]; then
+                                    echo "Kiểm tra $kind/$name trong namespace ${K8S_NAMESPACE}"
+                                    
+                                    # Kiểm tra resource có tồn tại không
+                                    if kubectl get $kind $name -n ${K8S_NAMESPACE} 2>/dev/null; then
+                                        echo "Tìm thấy $kind/$name - Đang xóa..."
+                                        kubectl delete $kind $name -n ${K8S_NAMESPACE} --ignore-not-found=true
+                                        echo "Đã xóa $kind/$name"
+                                    else
+                                        echo "$kind/$name không tồn tại - Bỏ qua"
+                                    fi
+                                fi
+                            fi
+                        done
+                        
+                        echo "=== Hoàn thành cleanup ==="
+                        
+                        # Đợi một chút để đảm bảo resources đã bị xóa hoàn toàn
+                        sleep 5
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes') {
+            steps {
+                withCredentials([file(credentialsId: "${KUBECONFIG_CREDENTIALS_ID}", variable: 'KUBECONFIG')]) {
+                    sh '''
+                        export KUBECONFIG=${KUBECONFIG}
+                        
+                        echo "=== Cập nhật image tag trong deployment.yaml ==="
+                        sed -i "s|image: .*${IMAGE_NAME}.*|image: ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
+                        
+                        echo "=== Apply các file YAML mới ==="
+                        
+                        # Apply từng file để dễ theo dõi
+                        for file in k8s/*.yaml k8s/*.yml; do
+                            if [ -f "$file" ]; then
+                                echo "Đang apply: $file"
+                                kubectl apply -f "$file" -n ${K8S_NAMESPACE}
+                            fi
+                        done
+                        
+                        echo "=== Kiểm tra trạng thái deployment ==="
+                        kubectl rollout status deployment/${IMAGE_NAME} -n ${K8S_NAMESPACE} --timeout=300s
+                        
+                        echo "=== Hiển thị pods ==="
+                        kubectl get pods -n ${K8S_NAMESPACE} -l app=${IMAGE_NAME}
+                    '''
+                }
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                withCredentials([file(credentialsId: "${KUBECONFIG_CREDENTIALS_ID}", variable: 'KUBECONFIG')]) {
+                    sh '''
+                        export KUBECONFIG=${KUBECONFIG}
+                        
+                        echo "=== Kiểm tra tất cả resources đã deploy ==="
+                        kubectl get all -n ${K8S_NAMESPACE} -l app=${IMAGE_NAME}
+                        
+                        echo "=== Kiểm tra services ==="
+                        kubectl get svc -n ${K8S_NAMESPACE}
+                        
+                        echo "=== Kiểm tra ingress (nếu có) ==="
+                        kubectl get ingress -n ${K8S_NAMESPACE} || echo "Không có ingress"
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "✅ Deploy thành công! Image: ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG}"
+        }
+        failure {
+            echo "❌ Deploy thất bại! Kiểm tra logs để biết chi tiết."
+        }
+        always {
+            sh '''
+                docker image prune -f || true
+            '''
+        }
+    }
+}
