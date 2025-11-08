@@ -1,18 +1,67 @@
-# Sử dụng image nginx:alpine gọn nhẹ làm image cuối cùng
+# Stage 1: Build ứng dụng
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN if [ -f package-lock.json ]; then \
+        npm ci --legacy-peer-deps; \
+    else \
+        npm install --legacy-peer-deps; \
+    fi
+
+# Copy .env file trước (quan trọng!)
+COPY .env* ./
+
+# Copy toàn bộ source code
+COPY . .
+
+# Arguments từ docker-compose
+ARG GEMINI_API_KEY
+ARG VITE_API_KEY
+
+# Set ENV variables cho Vite build
+ENV GEMINI_API_KEY=$GEMINI_API_KEY
+ENV VITE_API_KEY=$VITE_API_KEY
+
+# Debug: kiểm tra ENV variables
+RUN echo "=== Environment Variables ===" && \
+    echo "GEMINI_API_KEY: ${GEMINI_API_KEY:0:20}..." && \
+    echo "VITE_API_KEY: ${VITE_API_KEY:0:20}..." && \
+    ls -la .env* 2>/dev/null || echo "No .env files"
+
+# Build ứng dụng
+RUN npm run build
+
+# Debug: Kiểm tra API key trong build
+RUN echo "=== Build Output ===" && \
+    ls -la dist/ && \
+    if grep -r "AIzaSy" dist/ 2>/dev/null; then \
+        echo "✓ API key found in build files"; \
+    else \
+        echo "✗ WARNING: API key NOT found in build files"; \
+        echo "Checking dist structure:"; \
+        find dist/ -type f; \
+    fi
+
+# Stage 2: Serve với Nginx
 FROM nginx:1.25-alpine
 
-# Xóa file cấu hình mặc định của nginx
+# Xóa config mặc định
 RUN rm /etc/nginx/conf.d/default.conf
 
-# Sao chép file cấu hình nginx tùy chỉnh của chúng ta
+# Copy config nginx tùy chỉnh
 COPY nginx.conf /etc/nginx/conf.d/
 
-# Sao chép tất cả tài sản của ứng dụng từ thư mục hiện tại
-# vào thư mục public html của nginx.
-COPY . /usr/share/nginx/html
+# Copy file đã build từ stage builder
+# Vite build vào thư mục 'dist'
+COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Mở cổng 80 ra bên ngoài
+# Expose port 80
 EXPOSE 80
 
-# Lệnh để chạy nginx ở chế độ foreground
+# Start nginx
 CMD ["nginx", "-g", "daemon off;"]

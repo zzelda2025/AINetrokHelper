@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        GEMINI_API_KEY: ${GEMINI_API_KEY}  # Lấy từ file .env
+        VITE_API_KEY: ${VITE_API_KEY}      # Backup
+    container_name: ai-network-config
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
