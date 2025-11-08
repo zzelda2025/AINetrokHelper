@@ -11,9 +11,9 @@ pipeline {
         IMAGE_TAG = "${env.BUILD_NUMBER}" // Sử dụng số build làm tag
 
         // ID của credentials đã tạo
-        DOCKER_CREDENTIALS_ID = 'DOCKER_CREDENTIALS_ID'
+        DOCKER_CREDENTIALS_ID = 'devops-k8s'
         KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-k8s'
-        GEMINI_API_KEY_ID = 'AIzaSyBpIDnAg23UKwyT8PEKxOai5ruuuhiM2iQ'
+        GEMINI_API_KEY_ID = 'GITHUB_CREDENTIALS_ID'
     }
 
     // Các stage chính của pipeline
