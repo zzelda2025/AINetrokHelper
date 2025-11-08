@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ai-network-config-helper
+  namespace: corejs-prod
 spec:
   replicas: 1
   selector:
@@ -14,7 +15,7 @@ spec:
     spec:
       # Thêm imagePullSecrets ở đây
       imagePullSecrets:
-        - name: regcred
+        - name: github-registry-creds
       containers:
         - name: ai-network-config-helper
           image: register.vinhthai.io.vn/vinhtechlab/ai-network-config-helper/ai-network-config-helper:latest
