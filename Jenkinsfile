@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     environment {
-        DOCKER_REGISTRY_URL = 'register.vinhthai.io.vn/'
+        DOCKER_REGISTRY_URL = 'register.vinhthai.io.vn/vinhtechlab/ai-network-config-helper/'
         IMAGE_NAME = 'ai-network-config-helper'
         IMAGE_TAG = "${env.BUILD_NUMBER}"
         DOCKER_CREDENTIALS_ID = 'devops-k8s'
