@@ -2,10 +2,8 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ai-network-config-helper
-  labels:
-    app: ai-network-config-helper
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: ai-network-config-helper
@@ -14,10 +12,11 @@ spec:
       labels:
         app: ai-network-config-helper
     spec:
+      # Thêm imagePullSecrets ở đây
+      imagePullSecrets:
+        - name: regcred
       containers:
-      - name: ai-network-config-helper
-        # This image path is a placeholder and will be dynamically replaced
-        # by the Jenkins pipeline during the deployment stage.
-        image: your-docker-registry/ai-network-config-helper:latest
-        ports:
-        - containerPort: 80
+        - name: ai-network-config-helper
+          image: register.vinhthai.io.vn/vinhtechlab/ai-network-config-helper/ai-network-config-helper:latest
+          ports:
+            - containerPort: 80
