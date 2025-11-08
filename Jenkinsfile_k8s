@@ -8,7 +8,7 @@ pipeline {
         DOCKER_CREDENTIALS_ID = 'devops-k8s'
         KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-k8s'
         GEMINI_API_KEY_ID = 'gemini-api-key'
-        K8S_NAMESPACE = 'ai-network-config-helper' // Thay đổi namespace nếu cần
+        K8S_NAMESPACE = 'ai-network-config-helper'
     }
     
     stages {
@@ -58,36 +58,36 @@ pipeline {
                     sh '''
                         export KUBECONFIG=${KUBECONFIG}
                         
-                        echo "=== Kiểm tra và xóa các resources cũ ==="
+                        echo "=== Kiểm tra và xóa các resources cũ (trừ namespace) ==="
                         
-                        # Lấy danh sách các file YAML trong thư mục k8s
-                        for file in k8s/*.yaml k8s/*.yml; do
-                            if [ -f "$file" ]; then
-                                echo "Xử lý file: $file"
-                                
-                                # Kiểm tra loại resource trong file
-                                kind=$(grep -E "^kind:" "$file" | awk '{print $2}' | tr -d '\\r')
-                                name=$(grep -E "^  name:" "$file" | head -1 | awk '{print $2}' | tr -d '\\r')
-                                
-                                if [ ! -z "$kind" ] && [ ! -z "$name" ]; then
-                                    echo "Kiểm tra $kind/$name trong namespace ${K8S_NAMESPACE}"
-                                    
-                                    # Kiểm tra resource có tồn tại không
-                                    if kubectl get $kind $name -n ${K8S_NAMESPACE} 2>/dev/null; then
-                                        echo "Tìm thấy $kind/$name - Đang xóa..."
-                                        kubectl delete $kind $name -n ${K8S_NAMESPACE} --ignore-not-found=true
-                                        echo "Đã xóa $kind/$name"
-                                    else
-                                        echo "$kind/$name không tồn tại - Bỏ qua"
-                                    fi
-                                fi
-                            fi
-                        done
+                        # Thứ tự xóa ngược lại: deployment -> ingress -> service (giữ lại namespace)
+                        
+                        # 1. Xóa Deployment
+                        if [ -f "k8s/deployment.yaml" ] || [ -f "k8s/deployment.yml" ]; then
+                            echo "Xóa Deployment..."
+                            kubectl delete deployment ${IMAGE_NAME} -n ${K8S_NAMESPACE} --ignore-not-found=true
+                        fi
+                        
+                        # 2. Xóa Ingress
+                        if [ -f "k8s/ingress.yaml" ] || [ -f "k8s/ingress.yml" ]; then
+                            echo "Xóa Ingress..."
+                            kubectl delete ingress -n ${K8S_NAMESPACE} -l app=${IMAGE_NAME} --ignore-not-found=true
+                        fi
+                        
+                        # 3. Xóa Service
+                        if [ -f "k8s/service.yaml" ] || [ -f "k8s/service.yml" ]; then
+                            echo "Xóa Service..."
+                            kubectl delete service ${IMAGE_NAME} -n ${K8S_NAMESPACE} --ignore-not-found=true
+                        fi
+                        
+                        # 4. Xóa Secret (nếu có github-registry-secret)
+                        if [ -f "k8s/github-registry-secret.yaml" ] || [ -f "k8s/github-registry-secret.yml" ]; then
+                            echo "Xóa Secret..."
+                            kubectl delete secret -n ${K8S_NAMESPACE} -l app=${IMAGE_NAME} --ignore-not-found=true
+                        fi
                         
                         echo "=== Hoàn thành cleanup ==="
-                        
-                        # Đợi một chút để đảm bảo resources đã bị xóa hoàn toàn
-                        sleep 5
+                        sleep 3
                     '''
                 }
             }
@@ -100,21 +100,89 @@ pipeline {
                         export KUBECONFIG=${KUBECONFIG}
                         
                         echo "=== Cập nhật image tag trong deployment.yaml ==="
-                        sed -i "s|image: .*${IMAGE_NAME}.*|image: ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
+                        if [ -f "k8s/deployment.yaml" ]; then
+                            sed -i "s|image: .*${IMAGE_NAME}.*|image: ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
+                        elif [ -f "k8s/deployment.yml" ]; then
+                            sed -i "s|image: .*${IMAGE_NAME}.*|image: ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yml
+                        fi
                         
-                        echo "=== Apply các file YAML mới ==="
+                        echo "=== Apply các file YAML theo thứ tự ==="
                         
-                        # Apply từng file để dễ theo dõi
-                        for file in k8s/*.yaml k8s/*.yml; do
-                            if [ -f "$file" ]; then
-                                echo "Đang apply: $file"
-                                kubectl apply -f "$file" -n ${K8S_NAMESPACE}
-                            fi
-                        done
+                        # 1. Apply Namespace trước tiên
+                        echo ">>> Bước 1: Apply Namespace"
+                        if [ -f "k8s/namespace.yaml" ]; then
+                            echo "Đang apply: k8s/namespace.yaml"
+                            kubectl apply -f k8s/namespace.yaml
+                        elif [ -f "k8s/namespace.yml" ]; then
+                            echo "Đang apply: k8s/namespace.yml"
+                            kubectl apply -f k8s/namespace.yml
+                        else
+                            echo "Không tìm thấy namespace.yaml, tạo namespace..."
+                            kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                        fi
+                        echo "✓ Namespace đã sẵn sàng"
+                        echo ""
+                        
+                        # 2. Apply Secret (nếu có)
+                        echo ">>> Bước 2: Apply Secret (nếu có)"
+                        if [ -f "k8s/github-registry-secret.yaml" ]; then
+                            echo "Đang apply: k8s/github-registry-secret.yaml"
+                            kubectl apply -f k8s/github-registry-secret.yaml
+                        elif [ -f "k8s/github-registry-secret.yml" ]; then
+                            echo "Đang apply: k8s/github-registry-secret.yml"
+                            kubectl apply -f k8s/github-registry-secret.yml
+                        else
+                            echo "Không có file secret"
+                        fi
+                        echo ""
+                        
+                        # 3. Apply Service
+                        echo ">>> Bước 3: Apply Service"
+                        if [ -f "k8s/service.yaml" ]; then
+                            echo "Đang apply: k8s/service.yaml"
+                            kubectl apply -f k8s/service.yaml
+                        elif [ -f "k8s/service.yml" ]; then
+                            echo "Đang apply: k8s/service.yml"
+                            kubectl apply -f k8s/service.yml
+                        else
+                            echo "⚠ Không tìm thấy service.yaml"
+                        fi
+                        echo "✓ Service đã được apply"
+                        echo ""
+                        
+                        # 4. Apply Ingress
+                        echo ">>> Bước 4: Apply Ingress"
+                        if [ -f "k8s/ingress.yaml" ]; then
+                            echo "Đang apply: k8s/ingress.yaml"
+                            kubectl apply -f k8s/ingress.yaml
+                        elif [ -f "k8s/ingress.yml" ]; then
+                            echo "Đang apply: k8s/ingress.yml"
+                            kubectl apply -f k8s/ingress.yml
+                        else
+                            echo "⚠ Không tìm thấy ingress.yaml"
+                        fi
+                        echo "✓ Ingress đã được apply"
+                        echo ""
+                        
+                        # 5. Apply Deployment cuối cùng
+                        echo ">>> Bước 5: Apply Deployment"
+                        if [ -f "k8s/deployment.yaml" ]; then
+                            echo "Đang apply: k8s/deployment.yaml"
+                            kubectl apply -f k8s/deployment.yaml
+                        elif [ -f "k8s/deployment.yml" ]; then
+                            echo "Đang apply: k8s/deployment.yml"
+                            kubectl apply -f k8s/deployment.yml
+                        else
+                            echo "❌ Không tìm thấy deployment.yaml"
+                            exit 1
+                        fi
+                        echo "✓ Deployment đã được apply"
+                        echo ""
                         
                         echo "=== Kiểm tra trạng thái deployment ==="
                         kubectl rollout status deployment/${IMAGE_NAME} -n ${K8S_NAMESPACE} --timeout=300s
                         
+                        echo ""
                         echo "=== Hiển thị pods ==="
                         kubectl get pods -n ${K8S_NAMESPACE} -l app=${IMAGE_NAME}
                     '''
@@ -131,11 +199,17 @@ pipeline {
                         echo "=== Kiểm tra tất cả resources đã deploy ==="
                         kubectl get all -n ${K8S_NAMESPACE} -l app=${IMAGE_NAME}
                         
+                        echo ""
                         echo "=== Kiểm tra services ==="
                         kubectl get svc -n ${K8S_NAMESPACE}
                         
-                        echo "=== Kiểm tra ingress (nếu có) ==="
+                        echo ""
+                        echo "=== Kiểm tra ingress ==="
                         kubectl get ingress -n ${K8S_NAMESPACE} || echo "Không có ingress"
+                        
+                        echo ""
+                        echo "=== Kiểm tra namespace ==="
+                        kubectl get namespace ${K8S_NAMESPACE}
                     '''
                 }
             }
@@ -145,6 +219,7 @@ pipeline {
     post {
         success {
             echo "✅ Deploy thành công! Image: ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "✅ Namespace: ${K8S_NAMESPACE}"
         }
         failure {
             echo "❌ Deploy thất bại! Kiểm tra logs để biết chi tiết."
