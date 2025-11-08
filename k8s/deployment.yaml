@@ -18,6 +18,6 @@ spec:
         - name: github-registry-creds
       containers:
         - name: ai-network-config-helper
-          image: register.vinhthai.io.vn:443/vinhtechlab/ai-network-config-helper/ai-network-config-helper:latest
+          image: register.vinhthai.io.vn/vinhtechlab/ai-network-config-helper/ai-network-config-helper:latest
           ports:
             - containerPort: 80
