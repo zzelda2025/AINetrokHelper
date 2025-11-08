@@ -13,7 +13,7 @@ pipeline {
         // ID của credentials đã tạo
         DOCKER_CREDENTIALS_ID = 'devops-k8s'
         KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-k8s'
-        GEMINI_API_KEY_ID = 'GITHUB_CREDENTIALS_ID'
+        GEMINI_API_KEY_ID = 'github_username_pass'
     }
 
     // Các stage chính của pipeline
