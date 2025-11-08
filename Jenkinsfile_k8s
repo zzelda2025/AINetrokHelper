@@ -8,7 +8,7 @@ pipeline {
         DOCKER_CREDENTIALS_ID = 'devops-k8s'
         KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-k8s'
         GEMINI_API_KEY_ID = 'gemini-api-key'
-        K8S_NAMESPACE = 'default' // Thay đổi namespace nếu cần
+        K8S_NAMESPACE = 'ai-network-config-helper' // Thay đổi namespace nếu cần
     }
     
     stages {
