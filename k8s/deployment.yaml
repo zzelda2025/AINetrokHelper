@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: ai-network-config-helper
-  namespace: corejs-prod
+  namespace: ai-network-config-helper
 spec:
   replicas: 1
   selector:
