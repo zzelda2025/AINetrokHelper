@@ -5,7 +5,7 @@ pipeline {
         DOCKER_REGISTRY_URL = 'register.vinhthai.io.vn/'
         IMAGE_NAME = 'ai-network-config-helper'
         IMAGE_TAG = "${env.BUILD_NUMBER}"
-        DOCKER_CREDENTIALS_ID = 'docker-registry-credentials'
+        DOCKER_CREDENTIALS_ID = 'devops-k8s'
         KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-k8s'
         GEMINI_API_KEY_ID = 'gemini-api-key'
     }
