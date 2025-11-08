@@ -1,6 +1,6 @@
 # AI Network Config Helper
 
-Trợ lý AI dành cho kỹ sư mạng để tạo, phân tích và so sánh cấu hình thiết bị Cisco bằng Gemini API.
+Trợ lý AI dành cho kỹ sư mạng để tạo, phân tích và so sánh cấu hình thiết bị Cisco bằng Gemini API
 
 ## Hướng dẫn triển khai với Jenkins và Kubernetes
 
