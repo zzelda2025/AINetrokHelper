@@ -51,48 +51,7 @@ pipeline {
                 }
             }
         }
-        
-        stage('Cleanup Old Resources') {
-            steps {
-                withCredentials([file(credentialsId: "${KUBECONFIG_CREDENTIALS_ID}", variable: 'KUBECONFIG')]) {
-                    sh '''
-                        export KUBECONFIG=${KUBECONFIG}
-                        
-                        echo "=== Kiểm tra và xóa các resources cũ (trừ namespace) ==="
-                        
-                        # Thứ tự xóa ngược lại: deployment -> ingress -> service (giữ lại namespace)
-                        
-                        # 1. Xóa Deployment
-                        if [ -f "k8s/deployment.yaml" ] || [ -f "k8s/deployment.yml" ]; then
-                            echo "Xóa Deployment..."
-                            kubectl delete deployment ${IMAGE_NAME} -n ${K8S_NAMESPACE} --ignore-not-found=true
-                        fi
-                        
-                        # 2. Xóa Ingress
-                        if [ -f "k8s/ingress.yaml" ] || [ -f "k8s/ingress.yml" ]; then
-                            echo "Xóa Ingress..."
-                            kubectl delete ingress -n ${K8S_NAMESPACE} -l app=${IMAGE_NAME} --ignore-not-found=true
-                        fi
-                        
-                        # 3. Xóa Service
-                        if [ -f "k8s/service.yaml" ] || [ -f "k8s/service.yml" ]; then
-                            echo "Xóa Service..."
-                            kubectl delete service ${IMAGE_NAME} -n ${K8S_NAMESPACE} --ignore-not-found=true
-                        fi
-                        
-                        # 4. Xóa Secret (nếu có github-registry-secret)
-                        if [ -f "k8s/github-registry-secret.yaml" ] || [ -f "k8s/github-registry-secret.yml" ]; then
-                            echo "Xóa Secret..."
-                            kubectl delete secret -n ${K8S_NAMESPACE} -l app=${IMAGE_NAME} --ignore-not-found=true
-                        fi
-                        
-                        echo "=== Hoàn thành cleanup ==="
-                        sleep 3
-                    '''
-                }
-            }
-        }
-        
+               
     }
     
     post {
