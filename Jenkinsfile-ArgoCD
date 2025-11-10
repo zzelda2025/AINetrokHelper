@@ -1,0 +1,132 @@
+pipeline {
+    agent any
+    
+    environment {
+        // Cập nhật các biến này theo môi trường thực tế của bạn
+        DOCKER_REGISTRY_URL = 'register.vinhthai.io.vn/vinhtechlab/ai-network-config-helper/'
+        IMAGE_NAME = 'ai-network-config-helper'
+        IMAGE_TAG = "${env.BUILD_NUMBER}"
+        DOCKER_CREDENTIALS_ID = 'registry-gitlab-creds'
+        GEMINI_API_KEY_ID = 'gemini-api-key'
+        
+        // --- BIẾN MỚI CHO GITOPS (VUI LÒNG CHỈNH SỬA) ---
+        // Thay thế bằng URL SSH của repo cấu hình K8S
+        GITOPS_REPO_URL_SSH = 'git@github.com:zzelda2025/AINetrokHelper-Config.git' 
+        GITOPS_REPO_BRANCH = 'main'
+        // ID của SSH Key Credential (với quyền push)
+        GITOPS_REPO_CREDENTIAL_ID = 'gitops-repo-ssh-key' 
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo "Lấy mã nguồn từ GitHub..."
+                checkout scm
+            }
+        }
+        
+        stage('Inject API Key') {
+            steps {
+                echo "Tiêm API Key vào source code..."
+                withCredentials([string(credentialsId: "${GEMINI_API_KEY_ID}", variable: 'GEMINI_API_KEY')]) {
+                    sh '''
+                    sed -i "s|process.env.API_KEY|\\"${GEMINI_API_KEY}\\"|g" services/geminiService.ts
+                    '''
+                }
+            }
+        }
+        
+        stage('Build and Push Docker Image') {
+            steps {
+                script {
+                    echo "Đăng nhập, Build và Push Docker Image lên GitLab Registry..."
+                    withCredentials([usernamePassword(
+                        credentialsId: "${DOCKER_CREDENTIALS_ID}",
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )]) {
+                        sh '''
+                        echo $DOCKER_PASS | docker login ${DOCKER_REGISTRY_URL} -u $DOCKER_USER --password-stdin
+                        docker build -t ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG} .
+                        docker tag ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG} ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:latest
+                        docker push ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG}
+                        docker push ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:latest
+                        docker logout ${DOCKER_REGISTRY_URL}
+                        '''
+                    }
+                }
+            }
+        }
+        
+        // --- STAGE CD MỚI: THAY THẾ CHO KUBECTL ---
+        stage('Update GitOps Config Repo') {
+            steps {
+                echo "Cập nhật repo cấu hình K8S (GitOps)..."
+                // Sử dụng SSH Key Credential để checkout và push
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: "${GITOPS_REPO_CREDENTIAL_ID}",
+                    keyFileVariable: 'GITOPS_SSH_KEY',
+                    passphraseVariable: 'GITOPS_SSH_PASSPHRASE',
+                    usernameVariable: 'GITOPS_SSH_USER'
+                )]) {
+                    sh """
+                        # Thiết lập SSH Agent để sử dụng key
+                        echo "Setting up SSH..."
+                        mkdir -p ~/.ssh
+                        cp ${GITOPS_SSH_KEY} ~/.ssh/id_rsa
+                        chmod 600 ~/.ssh/id_rsa
+                        # Tự động chấp nhận host key (thay 'github.com' bằng host git của bạn)
+                        ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+                        # Cấu hình Git user
+                        git config --global user.email "jenkins-ci@vinhthai.io.vn"
+                        git config --global user.name "Jenkins CI Bot"
+
+                        # Clone repo cấu hình
+                        echo "Cloning GitOps repo..."
+                        git clone ${GITOPS_REPO_URL_SSH} gitops-config
+                        cd gitops-config
+
+                        # Cập nhật image tag trong file deployment.yaml
+                        echo "Updating image tag to: ${IMAGE_TAG}"
+                        sed -i "s|image: .*${IMAGE_NAME}.*|image: ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG}|g" k8s/deployment.yaml
+
+                        # Commit và Push thay đổi
+                        echo "Committing and pushing changes..."
+                        git add k8s/deployment.yaml
+                        
+                        # Chỉ commit nếu có thay đổi
+                        git diff-index --quiet HEAD || git commit -m "CI: Update ${IMAGE_NAME} image to tag ${IMAGE_TAG} [Build ${BUILD_NUMBER}]"
+                        
+                        git push origin ${GITOPS_REPO_BRANCH}
+                        
+                        # Dọn dẹp
+                        cd ..
+                        rm -rf gitops-config
+                    """
+                }
+            }
+        }
+        
+        // --- CÁC STAGE K8S CŨ ĐÃ BỊ XÓA ---
+        // stage('Cleanup Old Resources') { ... }
+        // stage('Deploy to Kubernetes') { ... }
+        // stage('Verify Deployment') { ... }
+    }
+    
+    post {
+        success {
+            echo "✅ CI Build thành công! Image: ${DOCKER_REGISTRY_URL}${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "✅ Đã push thay đổi cấu hình lên GitOps repo. ArgoCD sẽ tiếp nhận."
+        }
+        failure {
+            echo "❌ CI Build thất bại! Kiểm tra logs."
+        }
+        always {
+            echo "Dọn dẹp image cục bộ..."
+            sh '''
+                docker image prune -f || true
+            '''
+        }
+    }
+}
