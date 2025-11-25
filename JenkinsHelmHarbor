@@ -4,7 +4,7 @@ pipeline {
     environment {
         // Docker Registry Configuration
         HARBOR_REGISTRY_URL = 'harbor.vinhthai.io.vn'
-        HARBOR_PROJECT = 'vinhtechlab'
+        HARBOR_PROJECT = 'template-ainetwork'
         IMAGE_NAME = 'ai-network-config-helper'
         IMAGE_TAG = "${env.BUILD_NUMBER}"
         HARBOR_CREDENTIALS_ID = 'harbor-registry-creds'
