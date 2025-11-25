@@ -19,8 +19,8 @@ pipeline {
         HELM_HARBOR_URL = "https://${HARBOR_REGISTRY_URL}/chartrepo/${HARBOR_PROJECT}"
         
         // Local paths
-        HELM_SOURCE_DIR = 'helm'  // Thư mục helm trong source code
-        HELM_BUILD_DIR = 'helm-package'  // Thư mục để build helm chart
+        HELM_SOURCE_DIR = 'helm'
+        HELM_BUILD_DIR = 'helm-package'
     }
     
     stages {
@@ -52,10 +52,14 @@ pipeline {
                         passwordVariable: 'HARBOR_PASS'
                     )]) {
                         sh '''
+                        set -e
+                        
                         # Login to Harbor
+                        echo "🔐 Logging in to Harbor..."
                         echo $HARBOR_PASS | docker login ${HARBOR_REGISTRY_URL} -u $HARBOR_USER --password-stdin
                         
                         # Build image
+                        echo "🏗️ Building Docker image..."
                         FULL_IMAGE_PATH="${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}"
                         FULL_IMAGE_LATEST="${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}:latest"
                         
@@ -63,8 +67,11 @@ pipeline {
                         docker tag ${FULL_IMAGE_PATH} ${FULL_IMAGE_LATEST}
                         
                         # Push to Harbor
+                        echo "⬆️ Pushing images to Harbor..."
                         docker push ${FULL_IMAGE_PATH}
                         docker push ${FULL_IMAGE_LATEST}
+                        
+                        echo "✅ Docker images pushed successfully!"
                         
                         # Logout
                         docker logout ${HARBOR_REGISTRY_URL}
@@ -165,9 +172,6 @@ EOF
                 # Nếu có values tùy chỉnh, merge vào
                 if [ -f "${HELM_SOURCE_DIR}/values.yaml" ]; then
                     echo "📋 Merge custom values từ source code..."
-                    # Backup default values
-                    cp ${CHART_PATH}/values.yaml ${CHART_PATH}/values.default.yaml
-                    # Copy custom values (có thể cần tool merge phức tạp hơn)
                     cp ${HELM_SOURCE_DIR}/values.yaml ${CHART_PATH}/values.custom.yaml
                 fi
                 
@@ -209,19 +213,20 @@ EOF
                     # Cài đặt helm push plugin nếu chưa có
                     helm plugin list | grep -q push || helm plugin install https://github.com/chartmuseum/helm-push
                     
-                    # Add Harbor helm repo
+                    # Add Harbor helm repo (bỏ qua SSL verify nếu cần)
                     helm repo add ${HELM_REPO_NAME} ${HELM_HARBOR_URL} \
                         --username ${HARBOR_USER} \
-                        --password ${HARBOR_PASS}
+                        --password ${HARBOR_PASS} \
+                        --insecure-skip-tls-verify
                     
                     # Push chart to Harbor
                     CHART_PACKAGE="${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz"
                     
                     # Method 1: Using helm-push plugin
-                    helm cm-push ${CHART_PACKAGE} ${HELM_REPO_NAME} || \
+                    helm cm-push ${CHART_PACKAGE} ${HELM_REPO_NAME} --insecure || \
                     
                     # Method 2: Using curl (fallback)
-                    curl -u ${HARBOR_USER}:${HARBOR_PASS} \
+                    curl -k -u ${HARBOR_USER}:${HARBOR_PASS} \
                          -X POST \
                          --data-binary "@${CHART_PACKAGE}" \
                          "${HELM_HARBOR_URL}/api/charts"
