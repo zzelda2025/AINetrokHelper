@@ -2,23 +2,19 @@ pipeline {
     agent any
     
     environment {
-        // Harbor Registry Domain (Dùng cho Docker Push)
+        // Harbor Registry Domain
         HARBOR_DOMAIN_NAME = "harbor.vinhthai.io.vn"
         
-        // 🔥 BIẾN MỚI: IP NỘI BỘ của Harbor (Dùng cho Helm) 🔥
-        // CHÚ Ý: Cần thay thế bằng IP thực tế của máy chủ Harbor
-        HARBOR_INTERNAL_IP = "9.9.9.243" 
-        
-        // Base Image Name
+        // Base Image Name (Tag will be appended dynamically during the build process)
         APP_IMAGE_NAME = "harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper"
         
-        // Tên Helm Chart/Project trong Harbor
+        // 🔥 BIẾN MỚI: Tên Helm Chart/Project trong Harbor 🔥
         HELM_CHART_NAME = "template-ainetwork" 
         
-        // Jenkins Credentials ID
+        // Jenkins Credentials ID for Harbor Registry
         REGISTRY_LOGIN_ID = 'harbor-registry-creds'
         
-        // Docker Tag dựa trên Build Number
+        // CRITICAL: Define dynamic Docker Tag based on Jenkins Build Number
         DOCKER_TAG = "0.1.${env.BUILD_NUMBER}" 
     }
 
@@ -26,7 +22,7 @@ pipeline {
         stage('Stage 1: Checkout Source Code') {
             steps {
                 echo "INFO: Starting source code checkout..."
-                cleanWs() 
+                cleanWs() // Clean workspace before starting
                 checkout scm
                 echo "INFO: Source code checkout completed successfully."
             }
@@ -36,18 +32,18 @@ pipeline {
             steps {
                 echo "INFO: Building Docker Image version: ${DOCKER_TAG}..."
                 
-                // Authenticate Docker: Dùng HARBOR_DOMAIN_NAME (FQDN) vì Docker đã được cấu hình/Tunnel
+                // Authenticate with Harbor Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
                     sh 'echo $REG_PASS | docker login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
                 }
                 
-                // 1. Build Docker image (Đã giả định DockerfileHelm đã được sửa lỗi cú pháp)
+                // 1. Build Docker image with the dynamic tag
                 sh "docker build -f DockerfileHelm -t ${APP_IMAGE_NAME}:${DOCKER_TAG} ."
                 
-                // 2. Push image
+                // 2. Push the specific versioned image to Harbor
                 sh "docker push ${APP_IMAGE_NAME}:${DOCKER_TAG}"
                 
-                // 3. (Optional) Tag and push 'latest'
+                // 3. (Optional) Tag and push 'latest' for reference/backup purposes
                 sh "docker tag ${APP_IMAGE_NAME}:${DOCKER_TAG} ${APP_IMAGE_NAME}:latest"
                 sh "docker push ${APP_IMAGE_NAME}:latest"
                 
@@ -60,23 +56,24 @@ pipeline {
             steps {
                 echo "INFO: Preparing to package Helm Chart version: ${DOCKER_TAG}..."
                 
-                // 🔥 LOGIN HELM: Dùng IP NỘI BỘ và --insecure để bỏ qua lỗi chứng chỉ 🔥
+                // Authenticate Helm Client with Harbor OCI Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-                    sh 'echo $REG_PASS | helm registry login ${HARBOR_INTERNAL_IP} -u $REG_USER --password-stdin --insecure'
+                    sh 'echo $REG_PASS | helm registry login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
                 }
                 
                 script {
+                    // Loại bỏ biến local, sử dụng biến môi trường
                     def chartName = "${HELM_CHART_NAME}" 
                     
-                    // Clean up previous build artifacts
+                    // Clean up previous build artifacts to ensure a fresh environment
                     sh "rm -rf build_area && mkdir build_area"
                     
                     dir('build_area') {
-                        // 1. Initialize Helm Chart
+                        // 1. Initialize Helm Chart scaffolding and remove default boilerplate templates
                         sh "helm create ${chartName}"
                         sh "rm -rf ${chartName}/templates/*"
                         
-                        // 2. Copy source YAML files
+                        // 2. Copy source YAML files from Git into the build area
                         echo "INFO: Copying manifest files..."
                         sh "cp -f ../helm/values.yaml ${chartName}/values.yaml"
                         sh "cp ../helm/deployment.yaml ${chartName}/templates/"
@@ -84,28 +81,32 @@ pipeline {
                         sh "cp ../helm/ingress.yaml ${chartName}/templates/"
                         
                         // ============================================================
-                        // AUTOMATION STEP: Inject Dynamic Image Tag
+                        // 🔥 AUTOMATION STEP: Inject Dynamic Image Tag 🔥
                         // ============================================================
                         echo "INFO: Updating 'values.yaml' with new image tag: ${DOCKER_TAG}"
                         
                         if (isUnix()) {
+                            // Use sed to find 'tag: latest' and replace it with 'tag: 0.1.xx'
                             sh "sed -i 's|tag: latest|tag: ${DOCKER_TAG}|g' ${chartName}/values.yaml"
                         }
                         
+                        // Debug: Verify the replacement in the console logs
                         echo "--- VERIFICATION: values.yaml CONTENT ---"
                         sh "grep 'tag:' ${chartName}/values.yaml"
 
                         // 3. Package the Helm Chart
+                        // Synchronize Chart Version and App Version with the Docker Tag
                         sh "helm package ${chartName} --version ${DOCKER_TAG} --app-version ${DOCKER_TAG}"
                         
-                        // 4. Push the OCI Chart: Dùng IP NỘI BỘ
+                        // 4. Push the OCI Chart to Harbor
                         echo "INFO: Pushing Helm Chart to OCI Registry..."
-                        sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_INTERNAL_IP}/${HELM_CHART_NAME}" 
+                        // 🔥 SỬ DỤNG BIẾN MÔI TRƯỜNG 🔥
+                        sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/${HELM_CHART_NAME}" 
                     }
                 }
                 
-                // Logout Helm Client: Dùng IP NỘI BỘ
-                sh "helm registry logout ${HARBOR_INTERNAL_IP}"
+                // Logout Helm Client
+                sh "helm registry logout ${HARBOR_DOMAIN_NAME}"
             }
         }
     } // End of stages
