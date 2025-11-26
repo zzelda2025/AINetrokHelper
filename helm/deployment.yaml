@@ -16,7 +16,7 @@ spec:
       imagePullSecrets:
       - name: {{ .Values.image.pullSecretsName }} # <-- Biến cho tên Secret
       containers:
-      - name: nlb-frontend
+      - name: ainetwork-frontend
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}" # <-- Biến cho Image
         ports:
         - containerPort: {{ .Values.service.targetPort }}
