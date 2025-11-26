@@ -37,7 +37,7 @@ pipeline {
                 }
                 
                 // 1. Build Docker image with the dynamic tag
-                sh "docker build -f Dockerfile.txt -t ${APP_IMAGE_NAME}:${DOCKER_TAG} ."
+                sh "docker build -f DockerfileHelm -t ${APP_IMAGE_NAME}:${DOCKER_TAG} ."
                 
                 // 2. Push the specific versioned image to Harbor
                 sh "docker push ${APP_IMAGE_NAME}:${DOCKER_TAG}"
