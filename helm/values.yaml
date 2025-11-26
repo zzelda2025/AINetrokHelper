@@ -18,4 +18,4 @@ ingress:
   enabled: true
   name: ainetwork-ingress
   className: nginx
-  host: "ainetworkconfig.vinhthai.io.vn"
+  host: "ainetworkconfighelm.vinhthai.io.vn"
