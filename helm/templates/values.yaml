@@ -1,0 +1,21 @@
+replicaCount: 1
+
+deployment:
+  name: ainetwork-helper
+
+image:
+  repository: harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper
+  tag: 0.1.45
+  pullSecretsName: harbor-registry-creds
+
+service:
+  name: ainetworkconfig-svc
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+
+ingress:
+  enabled: true
+  name: nlb-ingress
+  className: nginx
+  host: "ainetworkconfig.vinhthai.io.vn"
