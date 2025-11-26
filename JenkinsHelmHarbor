@@ -102,7 +102,7 @@ pipeline {
                         // 4. Push the OCI Chart to Harbor
                         echo "INFO: Pushing Helm Chart to OCI Registry..."
                         // 🔥 SỬ DỤNG BIẾN MÔI TRƯỜNG 🔥
-                        sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/${HELM_CHART_NAME}" 
+                        sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/${HELM_CHART_NAME} --insecure" 
                     }
                 }
                 
