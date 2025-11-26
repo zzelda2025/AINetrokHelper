@@ -8,19 +8,19 @@ pipeline {
         // Base Image Name (Tag will be appended dynamically during the build process)
         APP_IMAGE_NAME = "harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper"
         
-        // 🔥 BIẾN MỚI: Tên Helm Chart/Project trong Harbor 🔥
+        // Tên Helm Chart/Project trong Harbor
         HELM_CHART_NAME = "template-ainetwork" 
         
         // Jenkins Credentials ID for Harbor Registry
         REGISTRY_LOGIN_ID = 'harbor-registry-creds'
         
-        // CRITICAL: Define dynamic Docker Tag based on Jenkins Build Number
+        // Define dynamic Docker Tag based on Jenkins Build Number
         DOCKER_TAG = "0.1.${env.BUILD_NUMBER}" 
         
-        // 🔥 NEW: Chart Build Directory 🔥
+        // Chart Build Directory (Tạm thời)
         BUILD_DIR = "helm_build_area" 
         
-        // 🔥 NEW: Source Directory in Git (Xác nhận là ../helm) 🔥
+        // Source Directory in Git (Xác nhận là ../helm)
         SOURCE_DIR = "../helm" 
     }
 
@@ -47,9 +47,9 @@ pipeline {
                 sh "docker build -f DockerfileHelm -t ${APP_IMAGE_NAME}:${DOCKER_TAG} ."
                 
                 // 2. Push the specific versioned image to Harbor
-                sh "docker push ${APP_IMAGE_IMAGE_NAME}:${DOCKER_TAG}"
+                sh "docker push ${APP_IMAGE_NAME}:${DOCKER_TAG}"
                 
-                // 3. (Optional) Tag and push 'latest' for reference/backup purposes
+                // 3. Tag and push 'latest' for reference/backup purposes
                 sh "docker tag ${APP_IMAGE_NAME}:${DOCKER_TAG} ${APP_IMAGE_NAME}:latest"
                 sh "docker push ${APP_IMAGE_NAME}:latest"
                 
@@ -57,8 +57,6 @@ pipeline {
                 sh "docker logout ${HARBOR_DOMAIN_NAME}"
             }
         }
-        
-        // ----------------------------------------------------------------------------------
         
         stage('Stage 3: Package & Publish Helm Chart') { 
             steps {
@@ -79,7 +77,7 @@ pipeline {
                         // 1. Initialize Helm Chart scaffolding
                         sh "helm create ${chartName}"
                         
-                        // 🔥 BƯỚC KHẮC PHỤC LỖI: Xóa triệt để tất cả các file mẫu trong templates/ 🔥
+                        // BƯỚC KHẮC PHỤC LỖI: Xóa triệt để tất cả các file mẫu trong templates/ 
                         sh "rm -rf ${chartName}/templates/*" 
                         
                         // ============================================================
@@ -92,7 +90,7 @@ pipeline {
                         echo "INFO: Copying manifest files..."
                         // 2. Copy source YAML files from Git into the build area
                         sh "cp -f ${SOURCE_DIR}/values.yaml ${chartName}/values.yaml"
-                        sh "cp ${SOURCE_DIR}/_helpers.tpl ${chartName}/templates/" // Copy file helper nếu có
+                        sh "cp ${SOURCE_DIR}/_helpers.tpl ${chartName}/templates/"
                         sh "cp ${SOURCE_DIR}/deployment.yaml ${chartName}/templates/"
                         sh "cp ${SOURCE_DIR}/service.yaml ${chartName}/templates/"
                         sh "cp ${SOURCE_DIR}/ingress.yaml ${chartName}/templates/"
@@ -101,7 +99,7 @@ pipeline {
                         // Phải hiển thị 4-5 file đã được copy
                         sh "ls -l ${chartName}/templates/" 
                         // ============================================================
-                        // 🔥 CHẨN ĐOÁN LỖI COPY: Kết thúc 🔥
+                        // CHẨN ĐOÁN LỖI COPY: Kết thúc 
                         // ============================================================
                         
                         // ============================================================
@@ -111,7 +109,6 @@ pipeline {
                         
                         if (isUnix()) {
                             // Use sed to find 'tag: latest' and replace it with 'tag: 0.1.xx'
-                            // Thêm flag -e để tránh lỗi trên một số Linux distro
                             sh "sed -i -e 's|tag: latest|tag: ${DOCKER_TAG}|g' ${chartName}/values.yaml" 
                         }
                         
@@ -133,13 +130,22 @@ pipeline {
                 sh "helm registry logout ${HARBOR_DOMAIN_NAME}"
             }
         }
-        // ----------------------------------------------------------------------------------
-        
-        // ... (Stage 4: Triển khai với ArgoCD - Tùy chọn) ...
     } // End of stages
 
     // Post-build Actions
     post {
-        // ... (Giữ nguyên) ...
+        always {
+            echo '--------------------------------------------------------'
+            echo "🏁 Pipeline finished. Build Version: ${DOCKER_TAG}"
+            echo '--------------------------------------------------------'
+        }
+        // 👇 KHẮC PHỤC LỖI CÚ PHÁP: post cannot be empty 👇
+        success {
+            echo '✅ SUCCESS: Pipeline completed successfully! Artifacts are ready in Harbor.'
+        }
+        failure {
+            echo '❌ FAILED: Pipeline encountered an error.'
+            echo '👉 Please check the Console Output above for debugging details.'
+        }
     }    
 }
