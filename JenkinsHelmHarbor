@@ -6,7 +6,7 @@ pipeline {
         HARBOR_DOMAIN_NAME = "harbor.vinhthai.io.vn"
         
         // Base Image Name (Tag will be appended dynamically during the build process)
-        APP_IMAGE_NAME = "harbor.vinhthai.io.vn/emplate-ainetwork/ai-network-config-helper"
+        APP_IMAGE_NAME = "harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper"
         
         // Jenkins Credentials ID for Harbor Registry
         REGISTRY_LOGIN_ID = 'harbor-registry-creds'
