@@ -1,4 +1,3 @@
-# Chỉ tạo Ingress NẾU .Values.ingress.enabled là true
 {{- if .Values.ingress.enabled -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -8,14 +7,14 @@ metadata:
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   rules:
-  - host: {{ .Values.ingress.host | quote }} # <-- quote để xử lý tên miền
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: {{ .Values.service.name }} # <-- Trỏ đến Service
-            port:
-              number: {{ .Values.service.port }}
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.service.name }}
+                port:
+                  number: {{ .Values.service.port }}
 {{- end -}}
