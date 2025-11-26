@@ -8,12 +8,13 @@ pipeline {
         // Base Image Name (Tag will be appended dynamically during the build process)
         APP_IMAGE_NAME = "harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper"
         
+        // 🔥 BIẾN MỚI: Tên Helm Chart/Project trong Harbor 🔥
+        HELM_CHART_NAME = "template-ainetwork" 
+        
         // Jenkins Credentials ID for Harbor Registry
         REGISTRY_LOGIN_ID = 'harbor-registry-creds'
         
         // CRITICAL: Define dynamic Docker Tag based on Jenkins Build Number
-        // Example: Build #39 -> DOCKER_TAG = "0.1.39"
-        // This ensures every build has a unique, immutable version.
         DOCKER_TAG = "0.1.${env.BUILD_NUMBER}" 
     }
 
@@ -33,7 +34,6 @@ pipeline {
                 
                 // Authenticate with Harbor Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-                    // Docker login: Sử dụng biến môi trường được tạo từ withCredentials
                     sh 'echo $REG_PASS | docker login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
                 }
                 
@@ -58,12 +58,13 @@ pipeline {
                 
                 // Authenticate Helm Client with Harbor OCI Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-                    // 🔥 KHẮC PHỤC LỖI: Thêm cờ --insecure để bỏ qua lỗi chứng chỉ TLS 🔥
+                    // 🔥 Khắc phục lỗi chứng chỉ TLS: Thêm cờ --insecure 🔥
                     sh 'echo $REG_PASS | helm registry login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin --insecure'
                 }
                 
                 script {
-                    def chartName = "template-nlb"
+                    // Loại bỏ biến local, sử dụng biến môi trường
+                    def chartName = "${HELM_CHART_NAME}" 
                     
                     // Clean up previous build artifacts to ensure a fresh environment
                     sh "rm -rf build_area && mkdir build_area"
@@ -88,9 +89,6 @@ pipeline {
                         if (isUnix()) {
                             // Use sed to find 'tag: latest' and replace it with 'tag: 0.1.xx'
                             sh "sed -i 's|tag: latest|tag: ${DOCKER_TAG}|g' ${chartName}/values.yaml"
-                        } else {
-                            // Cung cấp phương án thay thế nếu môi trường không phải Unix (ví dụ: Windows, nhưng Jenkins agent thường là Linux)
-                            echo "WARN: sed command skipped. Manual tag replacement may be required if agent is not Unix."
                         }
                         
                         // Debug: Verify the replacement in the console logs
@@ -103,7 +101,8 @@ pipeline {
                         
                         // 4. Push the OCI Chart to Harbor
                         echo "INFO: Pushing Helm Chart to OCI Registry..."
-                        sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/template-nlb"
+                        // 🔥 SỬ DỤNG BIẾN MÔI TRƯỜNG 🔥
+                        sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/${HELM_CHART_NAME}" 
                     }
                 }
                 
