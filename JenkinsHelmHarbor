@@ -43,7 +43,7 @@ pipeline {
                 }
                 
                 // Build & Push
-                sh "docker build -f DockerfileHelm -t ${APP_IMAGE_NAME}:${DOCKER_TAG} ."
+                sh "docker build -f Dockerfile -t ${APP_IMAGE_NAME}:${DOCKER_TAG} ."
                 sh "docker push ${APP_IMAGE_NAME}:${DOCKER_TAG}"
                 
                 // Push latest tag
