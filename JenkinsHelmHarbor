@@ -12,7 +12,7 @@ pipeline {
         // API Key
         GEMINI_API_KEY_ID = 'gemini-api-key'
         
-        // GitOps Repository Configuration (QUAN TRỌNG!)
+        // GitOps Repository Configuration
         GITOPS_REPO_URL = 'git@github.com:zzelda2025/AINetrokHelper-Config.git'
         GITOPS_REPO_BRANCH = 'main'
         GITOPS_SSH_KEY_ID = 'gitops-repo-ssh-key'
@@ -35,7 +35,13 @@ pipeline {
                 echo "🔑 Tiêm API Key vào source code..."
                 withCredentials([string(credentialsId: "${GEMINI_API_KEY_ID}", variable: 'GEMINI_API_KEY')]) {
                     sh '''
-                    sed -i "s|process.env.API_KEY|\\"${GEMINI_API_KEY}\\"|g" services/geminiService.ts
+                    if [ -f "services/geminiService.ts" ]; then
+                        sed -i.bak "s|process.env.API_KEY|\\"${GEMINI_API_KEY}\\"|g" services/geminiService.ts
+                        rm -f services/geminiService.ts.bak
+                        echo "✅ API Key injected successfully"
+                    else
+                        echo "⚠️ File services/geminiService.ts not found, skipping..."
+                    fi
                     '''
                 }
             }
@@ -53,7 +59,7 @@ pipeline {
                         sh '''
                         set -e
                         
-                        # Login to Harbor (bỏ qua SSL verify nếu dùng self-signed cert)
+                        # Login to Harbor
                         echo "🔐 Logging in to Harbor..."
                         echo $HARBOR_PASS | docker login ${HARBOR_REGISTRY_URL} -u $HARBOR_USER --password-stdin
                         
@@ -96,48 +102,54 @@ pipeline {
                     mkdir -p ~/.ssh
                     cp ${SSH_KEY} ~/.ssh/id_rsa
                     chmod 600 ~/.ssh/id_rsa
-                    ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+                    
+                    # Add GitHub to known hosts (disable strict checking)
+                    ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null || true
                     
                     # Configure Git
                     git config --global user.email "jenkins@vinhthai.io.vn"
                     git config --global user.name "Jenkins CI Bot"
                     
+                    # Clean up any existing gitops-repo
+                    rm -rf gitops-repo
+                    
                     # Clone GitOps repository
                     echo "📂 Cloning GitOps repository..."
-                    rm -rf gitops-repo
-                    git clone ${GITOPS_REPO_URL} gitops-repo
+                    GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" git clone ${GITOPS_REPO_URL} gitops-repo
+                    
                     cd gitops-repo
                     git checkout ${GITOPS_REPO_BRANCH}
                     
                     # Tạo thư mục Helm nếu chưa có
+                    echo "📁 Creating Helm directory structure..."
                     mkdir -p ${HELM_CHART_PATH}/templates
                     
                     # ===== COPY HELM TEMPLATES TỪ SOURCE CODE =====
                     echo "📋 Copying Helm templates from source code..."
                     
-                    # Copy toàn bộ thư mục helm từ WORKSPACE (source code đã checkout)
                     if [ -d "${WORKSPACE}/helm" ]; then
                         echo "✅ Found helm directory in source code"
                         
-                        # Copy Chart.yaml nếu có
+                        # Copy Chart.yaml
                         if [ -f "${WORKSPACE}/helm/Chart.yaml" ]; then
                             cp ${WORKSPACE}/helm/Chart.yaml ${HELM_CHART_PATH}/Chart.yaml
                             echo "✓ Copied Chart.yaml"
                         fi
                         
-                        # Copy values.yaml nếu có (sẽ update image tag sau)
+                        # Copy values.yaml
                         if [ -f "${WORKSPACE}/helm/values.yaml" ]; then
                             cp ${WORKSPACE}/helm/values.yaml ${HELM_CHART_PATH}/values.yaml
                             echo "✓ Copied values.yaml"
                         fi
                         
-                        # Copy toàn bộ templates/
+                        # Copy templates
                         if [ -d "${WORKSPACE}/helm/templates" ]; then
+                            rm -rf ${HELM_CHART_PATH}/templates/*
                             cp -r ${WORKSPACE}/helm/templates/* ${HELM_CHART_PATH}/templates/
                             echo "✓ Copied all templates"
                         fi
                         
-                        # Copy các file khác nếu có (.helmignore, README.md, etc)
+                        # Copy optional files
                         for file in .helmignore README.md NOTES.txt; do
                             if [ -f "${WORKSPACE}/helm/$file" ]; then
                                 cp ${WORKSPACE}/helm/$file ${HELM_CHART_PATH}/
@@ -149,17 +161,18 @@ pipeline {
                         echo "⚠️ Không tìm thấy thư mục helm/ trong source code"
                         echo "⚠️ Sẽ tạo Helm chart structure cơ bản..."
                         
-                        cat > ${HELM_CHART_PATH}/Chart.yaml <<EOF
+                        # Tạo Chart.yaml
+                        cat > ${HELM_CHART_PATH}/Chart.yaml <<'EOFCHART'
 apiVersion: v2
 name: ai-network-config-helper
 description: A Helm chart for AI Network Config Helper
 type: application
 version: 1.0.0
 appVersion: "1.0.0"
-EOF
+EOFCHART
                         
-                        # Tạo values.yaml cơ bản
-                        cat > ${HELM_CHART_PATH}/${HELM_VALUES_FILE} <<EOF
+                        # Tạo values.yaml
+                        cat > ${HELM_CHART_PATH}/${HELM_VALUES_FILE} <<EOFVALUES
 replicaCount: 1
 
 image:
@@ -188,17 +201,14 @@ resources:
 
 autoscaling:
   enabled: false
-  minReplicas: 1
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 80
 
 nodeSelector: {}
 tolerations: []
 affinity: {}
-EOF
+EOFVALUES
                         
-                        # Tạo deployment.yaml template cơ bản
-                        cat > ${HELM_CHART_PATH}/templates/deployment.yaml <<EOF
+                        # Tạo deployment.yaml
+                        cat > ${HELM_CHART_PATH}/templates/deployment.yaml <<'EOFDEPLOY'
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -231,10 +241,10 @@ spec:
           protocol: TCP
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
-EOF
+EOFDEPLOY
                         
-                        # Tạo service.yaml template
-                        cat > ${HELM_CHART_PATH}/templates/service.yaml <<EOF
+                        # Tạo service.yaml
+                        cat > ${HELM_CHART_PATH}/templates/service.yaml <<'EOFSERVICE'
 apiVersion: v1
 kind: Service
 metadata:
@@ -250,10 +260,10 @@ spec:
       name: http
   selector:
     {{- include "ai-network-config-helper.selectorLabels" . | nindent 4 }}
-EOF
+EOFSERVICE
                         
                         # Tạo _helpers.tpl
-                        cat > ${HELM_CHART_PATH}/templates/_helpers.tpl <<'EOF'
+                        cat > ${HELM_CHART_PATH}/templates/_helpers.tpl <<'EOFHELPERS'
 {{- define "ai-network-config-helper.fullname" -}}
 {{- .Release.Name | trunc 63 | trimSuffix "-" }}
 {{- end }}
@@ -270,34 +280,39 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/name: {{ .Chart.Name }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
-EOF
+EOFHELPERS
                         
                         echo "✅ Đã tạo Helm chart structure cơ bản"
-                        fi
                     fi
                     
                     # ===== CẬP NHẬT IMAGE TAG =====
                     echo "🔄 Updating image tag to: ${IMAGE_TAG}"
-                    sed -i "s|tag:.*|tag: \\"${IMAGE_TAG}\\"|g" ${HELM_CHART_PATH}/${HELM_VALUES_FILE}
                     
-                    # Cập nhật repository nếu cần
-                    sed -i "s|repository:.*|repository: ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}|g" ${HELM_CHART_PATH}/${HELM_VALUES_FILE}
+                    # Update image tag (compatible with both GNU and BSD sed)
+                    sed -i.bak "s|tag:.*|tag: \\"${IMAGE_TAG}\\"|g" ${HELM_CHART_PATH}/${HELM_VALUES_FILE}
+                    
+                    # Update repository
+                    sed -i.bak "s|repository:.*|repository: ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}|g" ${HELM_CHART_PATH}/${HELM_VALUES_FILE}
+                    
+                    # Remove backup files
+                    rm -f ${HELM_CHART_PATH}/${HELM_VALUES_FILE}.bak
                     
                     # Show changes
                     echo "📄 Changes in values.yaml:"
-                    git diff ${HELM_CHART_PATH}/${HELM_VALUES_FILE}
+                    cat ${HELM_CHART_PATH}/${HELM_VALUES_FILE} | grep -A 3 "image:"
                     
                     # Commit and push
                     git add .
                     
-                    if git diff-index --quiet HEAD --; then
+                    # Check if there are changes to commit
+                    if git diff --cached --quiet; then
                         echo "⚠️ No changes to commit"
                     else
                         echo "💾 Committing changes..."
                         git commit -m "🚀 CI: Update ${IMAGE_NAME} to tag ${IMAGE_TAG} [Build #${BUILD_NUMBER}]"
                         
                         echo "⬆️ Pushing to GitOps repository..."
-                        git push origin ${GITOPS_REPO_BRANCH}
+                        GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" git push origin ${GITOPS_REPO_BRANCH}
                         
                         echo "✅ GitOps repository updated successfully!"
                     fi
