@@ -8,8 +8,8 @@ pipeline {
         // Base Image Name (Tag will be appended dynamically during the build process)
         APP_IMAGE_NAME = "harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper"
         
-        // 🔥 BIẾN MỚI: Tên Helm Chart/Project trong Harbor 🔥
-        HELM_CHART_NAME = "template-ainetwork" 
+        // BIẾN MÔI TRƯỜNG: Tên Helm Chart/Project trong Harbor
+        HELM_CHART_NAME = "template-nlb" 
         
         // Jenkins Credentials ID for Harbor Registry
         REGISTRY_LOGIN_ID = 'harbor-registry-creds'
@@ -32,7 +32,7 @@ pipeline {
             steps {
                 echo "INFO: Building Docker Image version: ${DOCKER_TAG}..."
                 
-                // Authenticate with Harbor Registry
+                // Authenticate Docker with Harbor Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
                     sh 'echo $REG_PASS | docker login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
                 }
@@ -58,12 +58,11 @@ pipeline {
                 
                 // Authenticate Helm Client with Harbor OCI Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-                    // 🔥 Khắc phục lỗi chứng chỉ TLS: Thêm cờ --insecure 🔥
+                    // 🔥 FIX: Thêm cờ --insecure để bỏ qua lỗi chứng chỉ TLS cho LOGIN 🔥
                     sh 'echo $REG_PASS | helm registry login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin --insecure'
                 }
                 
                 script {
-                    // Loại bỏ biến local, sử dụng biến môi trường
                     def chartName = "${HELM_CHART_NAME}" 
                     
                     // Clean up previous build artifacts to ensure a fresh environment
@@ -101,7 +100,7 @@ pipeline {
                         
                         // 4. Push the OCI Chart to Harbor
                         echo "INFO: Pushing Helm Chart to OCI Registry..."
-                        // 🔥 SỬ DỤNG BIẾN MÔI TRƯỜNG 🔥
+                        // 🔥 FIX: Thêm cờ --insecure để bỏ qua lỗi chứng chỉ TLS cho PUSH 🔥
                         sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/${HELM_CHART_NAME} --insecure" 
                     }
                 }
