@@ -58,7 +58,7 @@ pipeline {
                 
                 // Authenticate Helm Client with Harbor OCI Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-                    // 🔥 FIX: Thêm cờ --insecure để bỏ qua lỗi chứng chỉ TLS cho LOGIN 🔥
+                    // ✅ FIX: helm registry login dùng --insecure để bỏ qua lỗi chứng chỉ TLS
                     sh 'echo $REG_PASS | helm registry login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin --insecure'
                 }
                 
@@ -100,8 +100,8 @@ pipeline {
                         
                         // 4. Push the OCI Chart to Harbor
                         echo "INFO: Pushing Helm Chart to OCI Registry..."
-                        // 🔥 FIX: Thêm cờ --insecure để bỏ qua lỗi chứng chỉ TLS cho PUSH 🔥
-                        sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/${HELM_CHART_NAME} --insecure" 
+                        // ✅ FIX: helm push KHÔNG DÙNG --insecure. Nó sẽ sử dụng phiên login đã được thiết lập.
+                        sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/${HELM_CHART_NAME}" 
                     }
                 }
                 
