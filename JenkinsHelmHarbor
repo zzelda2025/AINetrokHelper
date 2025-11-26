@@ -5,7 +5,7 @@ pipeline {
         // Harbor Registry Domain
         HARBOR_DOMAIN_NAME = "harbor.vinhthai.io.vn"
         
-        // Base Image Name (Tag will be appended dynamically during the build process)
+        // Base Image Name
         APP_IMAGE_NAME = "harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper"
         
         // Tên Helm Chart/Project trong Harbor
@@ -28,7 +28,7 @@ pipeline {
         stage('Stage 1: Checkout Source Code') {
             steps {
                 echo "INFO: Starting source code checkout..."
-                cleanWs() // Clean workspace before starting
+                cleanWs() 
                 checkout scm
                 echo "INFO: Source code checkout completed successfully."
             }
@@ -38,22 +38,18 @@ pipeline {
             steps {
                 echo "INFO: Building Docker Image version: ${DOCKER_TAG}..."
                 
-                // Authenticate with Harbor Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
                     sh 'echo $REG_PASS | docker login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
                 }
                 
-                // 1. Build Docker image with the dynamic tag
+                // Build & Push
                 sh "docker build -f DockerfileHelm -t ${APP_IMAGE_NAME}:${DOCKER_TAG} ."
-                
-                // 2. Push the specific versioned image to Harbor
                 sh "docker push ${APP_IMAGE_NAME}:${DOCKER_TAG}"
                 
-                // 3. Tag and push 'latest' for reference/backup purposes
+                // Push latest tag
                 sh "docker tag ${APP_IMAGE_NAME}:${DOCKER_TAG} ${APP_IMAGE_NAME}:latest"
                 sh "docker push ${APP_IMAGE_NAME}:latest"
                 
-                // Logout for security
                 sh "docker logout ${HARBOR_DOMAIN_NAME}"
             }
         }
@@ -62,7 +58,6 @@ pipeline {
             steps {
                 echo "INFO: Preparing to package Helm Chart version: ${DOCKER_TAG}..."
                 
-                // Authenticate Helm Client with Harbor OCI Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
                     sh 'echo $REG_PASS | helm registry login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
                 }
@@ -70,82 +65,73 @@ pipeline {
                 script {
                     def chartName = "${HELM_CHART_NAME}" 
                     
-                    // Clean up and create fresh build area
+                    // Tạo môi trường build sạch
                     sh "rm -rf ${BUILD_DIR} && mkdir ${BUILD_DIR}"
                     
                     dir("${BUILD_DIR}") {
-                        // 1. Initialize Helm Chart scaffolding
+                        // 1. Tạo khung Helm Chart
                         sh "helm create ${chartName}"
                         
-                        // BƯỚC KHẮC PHỤC LỖI: Xóa triệt để tất cả các file mẫu trong templates/ 
+                        // XÓA SẠCH file mẫu mặc định
                         sh "rm -rf ${chartName}/templates/*" 
                         
-                        // ============================================================
-                        // 🔥 CHẨN ĐOÁN LỖI COPY: Bắt đầu 🔥
-                        // ============================================================
-                        echo "--- DEBUG: Kiểm tra thư mục nguồn ${SOURCE_DIR} ---"
-                        // Kiểm tra xem các file có tồn tại ở thư mục nguồn hay không
-                        sh "ls -l ${SOURCE_DIR}" 
-                        
-                        echo "INFO: Copying manifest files..."
-                        // 2. Copy source YAML files from Git into the build area
+                        // 2. Copy file từ Git vào
+                        echo "INFO: Copying manifest files from ${SOURCE_DIR}..."
                         sh "cp -f ${SOURCE_DIR}/values.yaml ${chartName}/values.yaml"
+                        
+                        // Copy các file quan trọng (bao gồm _helpers.tpl nếu deployment.yaml dùng template)
                         sh "cp ${SOURCE_DIR}/_helpers.tpl ${chartName}/templates/"
                         sh "cp ${SOURCE_DIR}/deployment.yaml ${chartName}/templates/"
                         sh "cp ${SOURCE_DIR}/service.yaml ${chartName}/templates/"
                         sh "cp ${SOURCE_DIR}/ingress.yaml ${chartName}/templates/"
                         
-                        echo "--- DEBUG: Kiểm tra thư mục đích SAU KHI COPY ---"
-                        // Phải hiển thị 4-5 file đã được copy
+                        // DEBUG: Kiểm tra file đích
+                        echo "--- DEBUG: File list in templates/ folder ---"
                         sh "ls -l ${chartName}/templates/" 
-                        // ============================================================
-                        // CHẨN ĐOÁN LỖI COPY: Kết thúc 
-                        // ============================================================
                         
                         // ============================================================
-                        // AUTOMATION STEP: Inject Dynamic Image Tag
+                        // 🔥 QUAN TRỌNG: DEBUG HELM RENDER 🔥
+                        // Lệnh này sẽ in ra nội dung Manifest cuối cùng.
+                        // Nếu output rỗng hoặc lỗi -> ArgoCD sẽ bị lỗi Sync.
                         // ============================================================
+                        echo "--- DEBUG: HELM TEMPLATE RENDER OUTPUT (CRITICAL) ---"
+                        sh "helm template ${chartName} ./${chartName}" 
+                        echo "--------------------------------------------------------"
+
+                        // 3. Cập nhật Image Tag trong values.yaml
                         echo "INFO: Updating 'values.yaml' with new image tag: ${DOCKER_TAG}"
                         
                         if (isUnix()) {
-                            // Use sed to find 'tag: latest' and replace it with 'tag: 0.1.xx'
-                            sh "sed -i -e 's|tag: latest|tag: ${DOCKER_TAG}|g' ${chartName}/values.yaml" 
+                            // 🔥 CẢI TIẾN: Dùng Regex thay thế bất kỳ giá trị tag nào bằng tag mới
+                            sh "sed -i 's|tag: .*|tag: ${DOCKER_TAG}|g' ${chartName}/values.yaml"
                         }
                         
-                        // Debug: Verify the replacement in the console logs
-                        echo "--- VERIFICATION: values.yaml CONTENT ---"
+                        // Verify content
                         sh "grep 'tag:' ${chartName}/values.yaml"
 
-                        // 3. Package the Helm Chart
-                        // Synchronize Chart Version and App Version with the Docker Tag
+                        // 4. Đóng gói và Push
                         sh "helm package ${chartName} --version ${DOCKER_TAG} --app-version ${DOCKER_TAG}"
                         
-                        // 4. Push the OCI Chart to Harbor
                         echo "INFO: Pushing Helm Chart to OCI Registry..."
                         sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/${HELM_CHART_NAME}" 
                     }
                 }
                 
-                // Logout Helm Client
                 sh "helm registry logout ${HARBOR_DOMAIN_NAME}"
             }
         }
-    } // End of stages
+    } 
 
-    // Post-build Actions
     post {
         always {
             echo '--------------------------------------------------------'
             echo "🏁 Pipeline finished. Build Version: ${DOCKER_TAG}"
-            echo '--------------------------------------------------------'
         }
-        // 👇 KHẮC PHỤC LỖI CÚ PHÁP: post cannot be empty 👇
         success {
-            echo '✅ SUCCESS: Pipeline completed successfully! Artifacts are ready in Harbor.'
+            echo '✅ SUCCESS: Artifacts are ready in Harbor.'
         }
         failure {
-            echo '❌ FAILED: Pipeline encountered an error.'
-            echo '👉 Please check the Console Output above for debugging details.'
+            echo '❌ FAILED: Please check Console Output.'
         }
     }    
 }
