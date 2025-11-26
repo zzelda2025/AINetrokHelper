@@ -2,25 +2,19 @@ pipeline {
     agent any
     
     environment {
-        // Harbor Registry Domain
+        // --- CẤU HÌNH HARBOR & IMAGE ---
         HARBOR_DOMAIN_NAME = "harbor.vinhthai.io.vn"
-        
-        // Base Image Name
         APP_IMAGE_NAME = "harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper"
-        
-        // Tên Helm Chart/Project trong Harbor
         HELM_CHART_NAME = "template-ainetwork" 
         
-        // Jenkins Credentials ID for Harbor Registry
+        // --- CREDENTIALS ---
         REGISTRY_LOGIN_ID = 'harbor-registry-creds'
+        // 🔥 BIẾN QUAN TRỌNG: ID của Secret chứa API Key trong Jenkins 🔥
+        GEMINI_API_KEY_ID = 'gemini-api-key' 
         
-        // Define dynamic Docker Tag based on Jenkins Build Number
+        // --- DYNAMIC TAGS & PATHS ---
         DOCKER_TAG = "0.1.${env.BUILD_NUMBER}" 
-        
-        // Chart Build Directory (Tạm thời)
         BUILD_DIR = "helm_build_area" 
-        
-        // Source Directory in Git (Xác nhận là ../helm)
         SOURCE_DIR = "../helm" 
     }
 
@@ -34,6 +28,23 @@ pipeline {
             }
         }
 
+        // ============================================================
+        // 🔥 STAGE MỚI: TIÊM API KEY VÀO CODE (QUAN TRỌNG NHẤT) 🔥
+        // ============================================================
+        stage('Inject API Key') {
+            steps {
+                echo "💉 Injecting API Key into source code..."
+                withCredentials([string(credentialsId: "${GEMINI_API_KEY_ID}", variable: 'GEMINI_API_KEY')]) {
+                    sh '''
+                    # Tìm chuỗi process.env.API_KEY trong file ts và thay bằng Key thật
+                    # Lệnh này lấy từ Jenkinsfile cũ của bạn
+                    sed -i "s|process.env.API_KEY|\\"${GEMINI_API_KEY}\\"|g" services/geminiService.ts
+                    '''
+                }
+                echo "✅ API Key injected successfully!"
+            }
+        }
+
         stage('Stage 2: Build & Push Docker Image') { 
             steps {
                 echo "INFO: Building Docker Image version: ${DOCKER_TAG}..."
@@ -42,11 +53,14 @@ pipeline {
                     sh 'echo $REG_PASS | docker login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
                 }
                 
-                // Build & Push
+                // 1. Build Docker image 
+                // 🔥 LƯU Ý: Dùng 'Dockerfile' (file của App), KHÔNG PHẢI 'DockerfileHelm' 🔥
                 sh "docker build -f Dockerfile -t ${APP_IMAGE_NAME}:${DOCKER_TAG} ."
+                
+                // 2. Push Image
                 sh "docker push ${APP_IMAGE_NAME}:${DOCKER_TAG}"
                 
-                // Push latest tag
+                // 3. Push latest tag
                 sh "docker tag ${APP_IMAGE_NAME}:${DOCKER_TAG} ${APP_IMAGE_NAME}:latest"
                 sh "docker push ${APP_IMAGE_NAME}:latest"
                 
@@ -65,58 +79,34 @@ pipeline {
                 script {
                     def chartName = "${HELM_CHART_NAME}" 
                     
-                    // Tạo môi trường build sạch
+                    // Clean workspace for helm build
                     sh "rm -rf ${BUILD_DIR} && mkdir ${BUILD_DIR}"
                     
                     dir("${BUILD_DIR}") {
-                        // 1. Tạo khung Helm Chart
+                        // 1. Create Chart Scaffold
                         sh "helm create ${chartName}"
-                        
-                        // XÓA SẠCH file mẫu mặc định
                         sh "rm -rf ${chartName}/templates/*" 
                         
-                        // 2. Copy file từ Git vào
-                        echo "INFO: Copying manifest files from ${SOURCE_DIR}..."
+                        // 2. Copy Manifests from Git
+                        echo "INFO: Copying manifest files..."
                         sh "cp -f ${SOURCE_DIR}/values.yaml ${chartName}/values.yaml"
-                        
-                        // Copy các file quan trọng (bao gồm _helpers.tpl nếu deployment.yaml dùng template)
                         sh "cp ${SOURCE_DIR}/_helpers.tpl ${chartName}/templates/"
                         sh "cp ${SOURCE_DIR}/deployment.yaml ${chartName}/templates/"
                         sh "cp ${SOURCE_DIR}/service.yaml ${chartName}/templates/"
                         sh "cp ${SOURCE_DIR}/ingress.yaml ${chartName}/templates/"
                         
-                        // DEBUG: Kiểm tra file đích
-                        echo "--- DEBUG: File list in templates/ folder ---"
-                        sh "ls -l ${chartName}/templates/" 
-                        
-                        // ============================================================
-                        // 🔥 QUAN TRỌNG: DEBUG HELM RENDER 🔥
-                        // Lệnh này sẽ in ra nội dung Manifest cuối cùng.
-                        // Nếu output rỗng hoặc lỗi -> ArgoCD sẽ bị lỗi Sync.
-                        // ============================================================
-                        echo "--- DEBUG: HELM TEMPLATE RENDER OUTPUT (CRITICAL) ---"
-                        sh "helm template ${chartName} ./${chartName}" 
-                        echo "--------------------------------------------------------"
-
-                        // 3. Cập nhật Image Tag trong values.yaml
+                        // 3. Update Image Tag in values.yaml
                         echo "INFO: Updating 'values.yaml' with new image tag: ${DOCKER_TAG}"
-                        
                         if (isUnix()) {
-                            // 🔥 CẢI TIẾN: Dùng Regex thay thế bất kỳ giá trị tag nào bằng tag mới
                             sh "sed -i 's|tag: .*|tag: ${DOCKER_TAG}|g' ${chartName}/values.yaml"
                         }
                         
-                        // Verify content
-                        sh "grep 'tag:' ${chartName}/values.yaml"
-
-                        // 4. Đóng gói và Push
+                        // 4. Package & Push Helm Chart
                         sh "helm package ${chartName} --version ${DOCKER_TAG} --app-version ${DOCKER_TAG}"
-                        
                         echo "INFO: Pushing Helm Chart to OCI Registry..."
                         sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/${HELM_CHART_NAME}" 
                     }
                 }
-                
                 sh "helm registry logout ${HARBOR_DOMAIN_NAME}"
             }
         }
@@ -124,7 +114,6 @@ pipeline {
 
     post {
         always {
-            echo '--------------------------------------------------------'
             echo "🏁 Pipeline finished. Build Version: ${DOCKER_TAG}"
         }
         success {
