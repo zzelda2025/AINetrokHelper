@@ -33,7 +33,8 @@ pipeline {
                 
                 // Authenticate with Harbor Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-                     sh 'echo $REG_PASS | docker login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
+                    // Docker login: Sử dụng biến môi trường được tạo từ withCredentials
+                    sh 'echo $REG_PASS | docker login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
                 }
                 
                 // 1. Build Docker image with the dynamic tag
@@ -43,7 +44,6 @@ pipeline {
                 sh "docker push ${APP_IMAGE_NAME}:${DOCKER_TAG}"
                 
                 // 3. (Optional) Tag and push 'latest' for reference/backup purposes
-                // Note: 'latest' should not be used for production deployments in GitOps.
                 sh "docker tag ${APP_IMAGE_NAME}:${DOCKER_TAG} ${APP_IMAGE_NAME}:latest"
                 sh "docker push ${APP_IMAGE_NAME}:latest"
                 
@@ -58,7 +58,8 @@ pipeline {
                 
                 // Authenticate Helm Client with Harbor OCI Registry
                 withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-                     sh 'echo $REG_PASS | helm registry login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
+                    // 🔥 KHẮC PHỤC LỖI: Thêm cờ --insecure để bỏ qua lỗi chứng chỉ TLS 🔥
+                    sh 'echo $REG_PASS | helm registry login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin --insecure'
                 }
                 
                 script {
@@ -73,7 +74,6 @@ pipeline {
                         sh "rm -rf ${chartName}/templates/*"
                         
                         // 2. Copy source YAML files from Git into the build area
-                        // Ensures we only use explicitly defined manifests
                         echo "INFO: Copying manifest files..."
                         sh "cp -f ../helm/values.yaml ${chartName}/values.yaml"
                         sh "cp ../helm/deployment.yaml ${chartName}/templates/"
@@ -83,13 +83,14 @@ pipeline {
                         // ============================================================
                         // 🔥 AUTOMATION STEP: Inject Dynamic Image Tag 🔥
                         // ============================================================
-                        // Dynamically replace the placeholder tag in values.yaml with the actual Build Tag.
-                        // This allows ArgoCD to detect the version change and trigger a sync.
                         echo "INFO: Updating 'values.yaml' with new image tag: ${DOCKER_TAG}"
                         
                         if (isUnix()) {
                             // Use sed to find 'tag: latest' and replace it with 'tag: 0.1.xx'
                             sh "sed -i 's|tag: latest|tag: ${DOCKER_TAG}|g' ${chartName}/values.yaml"
+                        } else {
+                            // Cung cấp phương án thay thế nếu môi trường không phải Unix (ví dụ: Windows, nhưng Jenkins agent thường là Linux)
+                            echo "WARN: sed command skipped. Manual tag replacement may be required if agent is not Unix."
                         }
                         
                         // Debug: Verify the replacement in the console logs
