@@ -41,7 +41,7 @@ RUN chmod +x /usr/local/bin/kubectl /usr/local/bin/helm
 USER jenkins
 
 # Install Helm Push Plugin (thêm cờ -y)
-RUN helm plugin install https://github.com/chartmuseum/helm-push -y
+RUN helm plugin install https://github.com/chartmuseum/helm-push
 
 # Final verification check
 RUN kubectl version --client && helm version
