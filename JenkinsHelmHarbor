@@ -12,14 +12,14 @@ pipeline {
         // API Key
         GEMINI_API_KEY_ID = 'gemini-api-key'
         
-        // GitOps Repository Configuration
-        GITOPS_REPO_URL = 'git@github.com:zzelda2025/AINetrokHelper-Config.git'
-        GITOPS_REPO_BRANCH = 'main'
-        GITOPS_SSH_KEY_ID = 'gitops-repo-ssh-key'
+        // Helm Configuration
+        HELM_CHART_NAME = 'ai-network-config-helper'
+        // Version format: MAJOR.MINOR.BUILD (e.g., 1.0.1, 1.0.2, ...)
+        HELM_CHART_VERSION = "1.0.${env.BUILD_NUMBER}"
         
-        // Helm Chart path trong GitOps repo
-        HELM_CHART_PATH = 'helm/ai-network-config-helper'
-        HELM_VALUES_FILE = 'values.yaml'
+        // Workspace paths
+        HELM_SOURCE_DIR = 'helm'
+        HELM_BUILD_DIR = 'helm-build'
     }
     
     stages {
@@ -86,83 +86,32 @@ pipeline {
             }
         }
         
-        stage('Update GitOps Repository') {
+        stage('Prepare Helm Chart') {
             steps {
-                echo "📝 Cập nhật GitOps Repository với Helm templates và image tag mới..."
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: "${GITOPS_SSH_KEY_ID}",
-                    keyFileVariable: 'SSH_KEY',
-                    usernameVariable: 'SSH_USER'
-                )]) {
-                    sh '''
-                    set -e
+                echo "📦 Chuẩn bị Helm Chart..."
+                sh '''
+                set -e
+                
+                # Clean and create build directory
+                rm -rf ${HELM_BUILD_DIR}
+                mkdir -p ${HELM_BUILD_DIR}/${HELM_CHART_NAME}
+                
+                # Copy Helm files from source code
+                if [ -d "${HELM_SOURCE_DIR}" ]; then
+                    echo "✅ Found helm directory in source code"
                     
-                    # Setup SSH
-                    echo "🔐 Setting up SSH..."
-                    mkdir -p ~/.ssh
-                    cp ${SSH_KEY} ~/.ssh/id_rsa
-                    chmod 600 ~/.ssh/id_rsa
+                    # Copy all files
+                    cp -r ${HELM_SOURCE_DIR}/* ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/
                     
-                    # Add GitHub to known hosts (disable strict checking)
-                    ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+                    echo "✓ Copied Helm chart from source"
+                else
+                    echo "⚠️ No helm directory found, creating basic structure..."
                     
-                    # Configure Git
-                    git config --global user.email "jenkins@vinhthai.io.vn"
-                    git config --global user.name "Jenkins CI Bot"
+                    # Create basic structure
+                    mkdir -p ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/templates
                     
-                    # Clean up any existing gitops-repo
-                    rm -rf gitops-repo
-                    
-                    # Clone GitOps repository
-                    echo "📂 Cloning GitOps repository..."
-                    GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" git clone ${GITOPS_REPO_URL} gitops-repo
-                    
-                    cd gitops-repo
-                    git checkout ${GITOPS_REPO_BRANCH}
-                    
-                    # Tạo thư mục Helm nếu chưa có
-                    echo "📁 Creating Helm directory structure..."
-                    mkdir -p ${HELM_CHART_PATH}/templates
-                    
-                    # ===== COPY HELM TEMPLATES TỪ SOURCE CODE =====
-                    echo "📋 Copying Helm templates from source code..."
-                    
-                    if [ -d "${WORKSPACE}/helm" ]; then
-                        echo "✅ Found helm directory in source code"
-                        
-                        # Copy Chart.yaml
-                        if [ -f "${WORKSPACE}/helm/Chart.yaml" ]; then
-                            cp ${WORKSPACE}/helm/Chart.yaml ${HELM_CHART_PATH}/Chart.yaml
-                            echo "✓ Copied Chart.yaml"
-                        fi
-                        
-                        # Copy values.yaml
-                        if [ -f "${WORKSPACE}/helm/values.yaml" ]; then
-                            cp ${WORKSPACE}/helm/values.yaml ${HELM_CHART_PATH}/values.yaml
-                            echo "✓ Copied values.yaml"
-                        fi
-                        
-                        # Copy templates
-                        if [ -d "${WORKSPACE}/helm/templates" ]; then
-                            rm -rf ${HELM_CHART_PATH}/templates/*
-                            cp -r ${WORKSPACE}/helm/templates/* ${HELM_CHART_PATH}/templates/
-                            echo "✓ Copied all templates"
-                        fi
-                        
-                        # Copy optional files
-                        for file in .helmignore README.md NOTES.txt; do
-                            if [ -f "${WORKSPACE}/helm/$file" ]; then
-                                cp ${WORKSPACE}/helm/$file ${HELM_CHART_PATH}/
-                                echo "✓ Copied $file"
-                            fi
-                        done
-                        
-                    else
-                        echo "⚠️ Không tìm thấy thư mục helm/ trong source code"
-                        echo "⚠️ Sẽ tạo Helm chart structure cơ bản..."
-                        
-                        # Tạo Chart.yaml
-                        cat > ${HELM_CHART_PATH}/Chart.yaml <<'EOFCHART'
+                    # Create Chart.yaml
+                    cat > ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/Chart.yaml <<'EOFCHART'
 apiVersion: v2
 name: ai-network-config-helper
 description: A Helm chart for AI Network Config Helper
@@ -170,15 +119,15 @@ type: application
 version: 1.0.0
 appVersion: "1.0.0"
 EOFCHART
-                        
-                        # Tạo values.yaml
-                        cat > ${HELM_CHART_PATH}/${HELM_VALUES_FILE} <<EOFVALUES
+                    
+                    # Create values.yaml
+                    cat > ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/values.yaml <<EOFVALUES
 replicaCount: 1
 
 image:
   repository: ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}
   pullPolicy: Always
-  tag: "${IMAGE_TAG}"
+  tag: "latest"
 
 imagePullSecrets:
   - name: harbor-registry-secret
@@ -206,9 +155,9 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 EOFVALUES
-                        
-                        # Tạo deployment.yaml
-                        cat > ${HELM_CHART_PATH}/templates/deployment.yaml <<'EOFDEPLOY'
+                    
+                    # Create deployment.yaml
+                    cat > ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/templates/deployment.yaml <<'EOFDEPLOY'
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -242,9 +191,9 @@ spec:
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
 EOFDEPLOY
-                        
-                        # Tạo service.yaml
-                        cat > ${HELM_CHART_PATH}/templates/service.yaml <<'EOFSERVICE'
+                    
+                    # Create service.yaml
+                    cat > ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/templates/service.yaml <<'EOFSERVICE'
 apiVersion: v1
 kind: Service
 metadata:
@@ -261,9 +210,9 @@ spec:
   selector:
     {{- include "ai-network-config-helper.selectorLabels" . | nindent 4 }}
 EOFSERVICE
-                        
-                        # Tạo _helpers.tpl
-                        cat > ${HELM_CHART_PATH}/templates/_helpers.tpl <<'EOFHELPERS'
+                    
+                    # Create _helpers.tpl
+                    cat > ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/templates/_helpers.tpl <<'EOFHELPERS'
 {{- define "ai-network-config-helper.fullname" -}}
 {{- .Release.Name | trunc 63 | trimSuffix "-" }}
 {{- end }}
@@ -281,45 +230,155 @@ app.kubernetes.io/name: {{ .Chart.Name }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 EOFHELPERS
-                        
-                        echo "✅ Đã tạo Helm chart structure cơ bản"
+                    
+                    echo "✅ Created basic Helm chart structure"
+                fi
+                
+                # List structure
+                echo "📂 Helm chart structure:"
+                find ${HELM_BUILD_DIR}/${HELM_CHART_NAME} -type f
+                '''
+            }
+        }
+        
+        stage('Update Helm Chart Metadata') {
+            steps {
+                echo "⚙️ Cập nhật Helm Chart metadata..."
+                sh '''
+                set -e
+                
+                CHART_PATH="${HELM_BUILD_DIR}/${HELM_CHART_NAME}"
+                
+                # Update Chart.yaml with correct version
+                echo "📝 Updating Chart.yaml..."
+                sed -i.bak "s|^version:.*|version: ${HELM_CHART_VERSION}|g" ${CHART_PATH}/Chart.yaml
+                sed -i.bak "s|^appVersion:.*|appVersion: \\"${IMAGE_TAG}\\"|g" ${CHART_PATH}/Chart.yaml
+                rm -f ${CHART_PATH}/Chart.yaml.bak
+                
+                # Update values.yaml with new image tag
+                echo "🔄 Updating values.yaml with image tag: ${IMAGE_TAG}"
+                sed -i.bak "s|tag:.*|tag: \\"${IMAGE_TAG}\\"|g" ${CHART_PATH}/values.yaml
+                sed -i.bak "s|repository:.*|repository: ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}|g" ${CHART_PATH}/values.yaml
+                rm -f ${CHART_PATH}/values.yaml.bak
+                
+                # Display Chart.yaml
+                echo "📄 Chart.yaml content:"
+                cat ${CHART_PATH}/Chart.yaml
+                
+                echo ""
+                echo "📄 Image configuration in values.yaml:"
+                grep -A 3 "^image:" ${CHART_PATH}/values.yaml || true
+                '''
+            }
+        }
+        
+        stage('Validate and Package Helm Chart') {
+            steps {
+                echo "🔍 Validate và Package Helm Chart..."
+                sh '''
+                set -e
+                
+                cd ${HELM_BUILD_DIR}
+                
+                # Lint the chart
+                echo "🔍 Linting Helm chart..."
+                helm lint ${HELM_CHART_NAME}
+                
+                # Package the chart
+                echo "📦 Packaging Helm chart..."
+                helm package ${HELM_CHART_NAME}
+                
+                # List packaged chart
+                echo "📦 Packaged chart:"
+                ls -lh *.tgz
+                
+                # Verify package content
+                echo "📋 Chart package content:"
+                tar -tzf ${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz | head -20
+                '''
+            }
+        }
+        
+        stage('Push Helm Chart to Harbor OCI Registry') {
+            steps {
+                echo "🚀 Push Helm Chart lên Harbor OCI Registry..."
+                withCredentials([usernamePassword(
+                    credentialsId: "${HARBOR_CREDENTIALS_ID}",
+                    usernameVariable: 'HARBOR_USER',
+                    passwordVariable: 'HARBOR_PASS'
+                )]) {
+                    sh '''
+                    set -e
+                    
+                    cd ${HELM_BUILD_DIR}
+                    
+                    CHART_PACKAGE="${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz"
+                    OCI_REGISTRY="oci://${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}"
+                    
+                    # Verify package exists
+                    if [ ! -f "$CHART_PACKAGE" ]; then
+                        echo "❌ Chart package not found: $CHART_PACKAGE"
+                        ls -la
+                        exit 1
                     fi
                     
-                    # ===== CẬP NHẬT IMAGE TAG =====
-                    echo "🔄 Updating image tag to: ${IMAGE_TAG}"
+                    echo "📦 Chart package: $CHART_PACKAGE"
+                    echo "🎯 Target registry: $OCI_REGISTRY"
                     
-                    # Update image tag (compatible with both GNU and BSD sed)
-                    sed -i.bak "s|tag:.*|tag: \\"${IMAGE_TAG}\\"|g" ${HELM_CHART_PATH}/${HELM_VALUES_FILE}
+                    # Login to Harbor OCI Registry
+                    echo "🔐 Logging in to Harbor OCI Registry..."
+                    echo $HARBOR_PASS | helm registry login ${HARBOR_REGISTRY_URL} \\
+                        --username $HARBOR_USER \\
+                        --password-stdin
                     
-                    # Update repository
-                    sed -i.bak "s|repository:.*|repository: ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}|g" ${HELM_CHART_PATH}/${HELM_VALUES_FILE}
+                    # Push to Harbor OCI Registry
+                    echo "⬆️ Pushing Helm chart to Harbor..."
+                    helm push $CHART_PACKAGE $OCI_REGISTRY
                     
-                    # Remove backup files
-                    rm -f ${HELM_CHART_PATH}/${HELM_VALUES_FILE}.bak
+                    echo "✅ Helm chart pushed successfully!"
+                    echo "📍 Chart location: ${OCI_REGISTRY}/${HELM_CHART_NAME}:${HELM_CHART_VERSION}"
                     
-                    # Show changes
-                    echo "📄 Changes in values.yaml:"
-                    cat ${HELM_CHART_PATH}/${HELM_VALUES_FILE} | grep -A 3 "image:"
+                    # Logout
+                    helm registry logout ${HARBOR_REGISTRY_URL}
+                    '''
+                }
+            }
+        }
+        
+        stage('Verify Helm Chart in Harbor') {
+            steps {
+                echo "✅ Verify Helm Chart trong Harbor..."
+                withCredentials([usernamePassword(
+                    credentialsId: "${HARBOR_CREDENTIALS_ID}",
+                    usernameVariable: 'HARBOR_USER',
+                    passwordVariable: 'HARBOR_PASS'
+                )]) {
+                    sh '''
+                    set -e
                     
-                    # Commit and push
-                    git add .
+                    OCI_CHART="oci://${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${HELM_CHART_NAME}"
                     
-                    # Check if there are changes to commit
-                    if git diff --cached --quiet; then
-                        echo "⚠️ No changes to commit"
+                    echo "🔍 Verifying chart in Harbor..."
+                    echo "📍 Chart: ${OCI_CHART}:${HELM_CHART_VERSION}"
+                    
+                    # Login again
+                    echo $HARBOR_PASS | helm registry login ${HARBOR_REGISTRY_URL} \\
+                        --username $HARBOR_USER \\
+                        --password-stdin
+                    
+                    # Try to pull the chart to verify
+                    echo "📥 Testing pull from Harbor..."
+                    helm pull ${OCI_CHART} --version ${HELM_CHART_VERSION} --destination /tmp
+                    
+                    if [ -f "/tmp/${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz" ]; then
+                        echo "✅ Chart verified successfully in Harbor!"
+                        rm -f /tmp/${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz
                     else
-                        echo "💾 Committing changes..."
-                        git commit -m "🚀 CI: Update ${IMAGE_NAME} to tag ${IMAGE_TAG} [Build #${BUILD_NUMBER}]"
-                        
-                        echo "⬆️ Pushing to GitOps repository..."
-                        GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no" git push origin ${GITOPS_REPO_BRANCH}
-                        
-                        echo "✅ GitOps repository updated successfully!"
+                        echo "⚠️ Chart verification failed!"
                     fi
                     
-                    # Cleanup
-                    cd ..
-                    rm -rf gitops-repo
+                    # Logout
+                    helm registry logout ${HARBOR_REGISTRY_URL}
                     '''
                 }
             }
@@ -330,22 +389,35 @@ EOFHELPERS
         success {
             echo """
             ✅ ============================================
-            ✅ CI BUILD THÀNH CÔNG!
+            ✅ PIPELINE HOÀN TẤT THÀNH CÔNG!
             ✅ ============================================
-            📦 Docker Image: ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}
-            📝 GitOps Repo: ${GITOPS_REPO_URL}
-            🎯 Branch: ${GITOPS_REPO_BRANCH}
             
-            🔄 ArgoCD sẽ tự động phát hiện thay đổi và deploy lên K8s
+            📦 DOCKER IMAGE:
+            └─ ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}
+            └─ ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}:latest
+            
+            📦 HELM CHART (OCI):
+            └─ oci://${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${HELM_CHART_NAME}:${HELM_CHART_VERSION}
+            
+            🎯 ARGOCD APPLICATION:
+            └─ Chart: ${HELM_CHART_NAME}
+            └─ RepoURL: oci://${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}
+            └─ Version: ${HELM_CHART_VERSION}
+            
+            📝 NEXT STEPS:
+            1. Tạo/Update ArgoCD Application với version: ${HELM_CHART_VERSION}
+            2. Hoặc dùng targetRevision: "1.0.*" để auto-update
+            3. Sync ArgoCD để deploy lên K8s
+            
             ✅ ============================================
             """
         }
         failure {
             echo """
             ❌ ============================================
-            ❌ CI BUILD THẤT BẠI!
+            ❌ PIPELINE THẤT BẠI!
             ❌ ============================================
-            🔍 Vui lòng kiểm tra logs để biết chi tiết
+            🔍 Vui lòng kiểm tra logs ở stage bị lỗi
             ❌ ============================================
             """
         }
@@ -355,11 +427,11 @@ EOFHELPERS
                 # Cleanup docker images
                 docker image prune -f || true
                 
-                # Cleanup SSH keys
-                rm -f ~/.ssh/id_rsa || true
+                # Cleanup build directory
+                rm -rf ${HELM_BUILD_DIR} || true
                 
-                # Cleanup git repos
-                rm -rf gitops-repo || true
+                # Cleanup temp files
+                rm -f /tmp/${HELM_CHART_NAME}-*.tgz || true
             '''
         }
     }
