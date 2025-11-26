@@ -5,7 +5,7 @@ deployment:
 
 image:
   repository: harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper
-  tag: 0.1.45
+  tag: 0.1.59
   pullSecretsName: harbor-registry-creds
 
 service:
