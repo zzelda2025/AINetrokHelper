@@ -1,0 +1,13 @@
+apiVersion: v2
+name: ai-network-config-helper
+description: A Helm chart for AI Network Config Helper
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - ai
+  - network
+  - helper
+maintainers:
+  - name: VinhThai Team
+    email: jenkins@vinhthai.io.vn
