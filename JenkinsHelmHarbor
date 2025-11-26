@@ -9,7 +9,7 @@ pipeline {
         APP_IMAGE_NAME = "harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper"
         
         // BIẾN MÔI TRƯỜNG: Tên Helm Chart/Project trong Harbor
-        HELM_CHART_NAME = "template-nlb" 
+        HELM_CHART_NAME = "template-ainetwork" 
         
         // Jenkins Credentials ID for Harbor Registry
         REGISTRY_LOGIN_ID = 'harbor-registry-creds'
