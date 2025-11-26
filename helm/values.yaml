@@ -4,8 +4,8 @@ deployment:
   name: ainetwork-helper
 
 image:
-  repository: harbor.vinhthai.io.vn/vinhtechlab/ainetwork-helper
-  tag: latest
+  repository: harbor.vinhthai.io.vn/template-ainetwork/ai-network-config-helper
+  tag: 0.1.45
   pullSecretsName: harbor-registry-creds
 
 service:
