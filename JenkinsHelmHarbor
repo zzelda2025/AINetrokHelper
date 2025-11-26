@@ -2,437 +2,129 @@ pipeline {
     agent any
     
     environment {
-        // Docker Registry Configuration
-        HARBOR_REGISTRY_URL = 'harbor.vinhthai.io.vn'
-        HARBOR_PROJECT = 'template-ainetwork'
-        IMAGE_NAME = 'ai-network-config-helper'
-        IMAGE_TAG = "${env.BUILD_NUMBER}"
-        HARBOR_CREDENTIALS_ID = 'harbor-registry-creds'
+        // Harbor Registry Domain
+        HARBOR_DOMAIN_NAME = "harbor.vinhthai.io.vn"
         
-        // API Key
-        GEMINI_API_KEY_ID = 'gemini-api-key'
+        // Base Image Name (Tag will be appended dynamically during the build process)
+        APP_IMAGE_NAME = "harbor.vinhthai.io.vn/emplate-ainetwork/ai-network-config-helper"
         
-        // Helm Configuration
-        HELM_CHART_NAME = 'ai-network-config-helper'
-        // Version format: MAJOR.MINOR.BUILD (e.g., 1.0.1, 1.0.2, ...)
-        HELM_CHART_VERSION = "1.0.${env.BUILD_NUMBER}"
+        // Jenkins Credentials ID for Harbor Registry
+        REGISTRY_LOGIN_ID = 'harbor-registry-creds'
         
-        // Workspace paths
-        HELM_SOURCE_DIR = 'helm'
-        HELM_BUILD_DIR = 'helm-build'
+        // CRITICAL: Define dynamic Docker Tag based on Jenkins Build Number
+        // Example: Build #39 -> DOCKER_TAG = "0.1.39"
+        // This ensures every build has a unique, immutable version.
+        DOCKER_TAG = "0.1.${env.BUILD_NUMBER}" 
     }
-    
+
     stages {
-        stage('Checkout Source Code') {
+        stage('Stage 1: Checkout Source Code') {
             steps {
-                echo "🔄 Lấy mã nguồn từ GitHub (triggered by webhook)..."
+                echo "INFO: Starting source code checkout..."
+                cleanWs() // Clean workspace before starting
                 checkout scm
+                echo "INFO: Source code checkout completed successfully."
             }
         }
-        
-        stage('Inject API Key') {
+
+        stage('Stage 2: Build & Push Docker Image') { 
             steps {
-                echo "🔑 Tiêm API Key vào source code..."
-                withCredentials([string(credentialsId: "${GEMINI_API_KEY_ID}", variable: 'GEMINI_API_KEY')]) {
-                    sh '''
-                    if [ -f "services/geminiService.ts" ]; then
-                        sed -i.bak "s|process.env.API_KEY|\\"${GEMINI_API_KEY}\\"|g" services/geminiService.ts
-                        rm -f services/geminiService.ts.bak
-                        echo "✅ API Key injected successfully"
-                    else
-                        echo "⚠️ File services/geminiService.ts not found, skipping..."
-                    fi
-                    '''
+                echo "INFO: Building Docker Image version: ${DOCKER_TAG}..."
+                
+                // Authenticate with Harbor Registry
+                withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+                     sh 'echo $REG_PASS | docker login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
                 }
+                
+                // 1. Build Docker image with the dynamic tag
+                sh "docker build -f Dockerfile.txt -t ${APP_IMAGE_NAME}:${DOCKER_TAG} ."
+                
+                // 2. Push the specific versioned image to Harbor
+                sh "docker push ${APP_IMAGE_NAME}:${DOCKER_TAG}"
+                
+                // 3. (Optional) Tag and push 'latest' for reference/backup purposes
+                // Note: 'latest' should not be used for production deployments in GitOps.
+                sh "docker tag ${APP_IMAGE_NAME}:${DOCKER_TAG} ${APP_IMAGE_NAME}:latest"
+                sh "docker push ${APP_IMAGE_NAME}:latest"
+                
+                // Logout for security
+                sh "docker logout ${HARBOR_DOMAIN_NAME}"
             }
         }
         
-        stage('Build and Push Docker Image') {
+        stage('Stage 3: Package & Publish Helm Chart') { 
             steps {
+                echo "INFO: Preparing to package Helm Chart version: ${DOCKER_TAG}..."
+                
+                // Authenticate Helm Client with Harbor OCI Registry
+                withCredentials([usernamePassword(credentialsId: REGISTRY_LOGIN_ID, usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+                     sh 'echo $REG_PASS | helm registry login ${HARBOR_DOMAIN_NAME} -u $REG_USER --password-stdin'
+                }
+                
                 script {
-                    echo "🐳 Build và Push Docker Image lên Harbor Registry..."
-                    withCredentials([usernamePassword(
-                        credentialsId: "${HARBOR_CREDENTIALS_ID}",
-                        usernameVariable: 'HARBOR_USER',
-                        passwordVariable: 'HARBOR_PASS'
-                    )]) {
-                        sh '''
-                        set -e
+                    def chartName = "template-nlb"
+                    
+                    // Clean up previous build artifacts to ensure a fresh environment
+                    sh "rm -rf build_area && mkdir build_area"
+                    
+                    dir('build_area') {
+                        // 1. Initialize Helm Chart scaffolding and remove default boilerplate templates
+                        sh "helm create ${chartName}"
+                        sh "rm -rf ${chartName}/templates/*"
                         
-                        # Login to Harbor
-                        echo "🔐 Logging in to Harbor..."
-                        echo $HARBOR_PASS | docker login ${HARBOR_REGISTRY_URL} -u $HARBOR_USER --password-stdin
+                        // 2. Copy source YAML files from Git into the build area
+                        // Ensures we only use explicitly defined manifests
+                        echo "INFO: Copying manifest files..."
+                        sh "cp -f ../helm/values.yaml ${chartName}/values.yaml"
+                        sh "cp ../helm/deployment.yaml ${chartName}/templates/"
+                        sh "cp ../helm/service.yaml ${chartName}/templates/"
+                        sh "cp ../helm/ingress.yaml ${chartName}/templates/"
                         
-                        # Build image
-                        echo "🏗️ Building Docker image..."
-                        FULL_IMAGE_PATH="${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}"
-                        FULL_IMAGE_LATEST="${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}:latest"
+                        // ============================================================
+                        // 🔥 AUTOMATION STEP: Inject Dynamic Image Tag 🔥
+                        // ============================================================
+                        // Dynamically replace the placeholder tag in values.yaml with the actual Build Tag.
+                        // This allows ArgoCD to detect the version change and trigger a sync.
+                        echo "INFO: Updating 'values.yaml' with new image tag: ${DOCKER_TAG}"
                         
-                        docker build -t ${FULL_IMAGE_PATH} .
-                        docker tag ${FULL_IMAGE_PATH} ${FULL_IMAGE_LATEST}
+                        if (isUnix()) {
+                            // Use sed to find 'tag: latest' and replace it with 'tag: 0.1.xx'
+                            sh "sed -i 's|tag: latest|tag: ${DOCKER_TAG}|g' ${chartName}/values.yaml"
+                        }
                         
-                        # Push to Harbor
-                        echo "⬆️ Pushing images to Harbor..."
-                        docker push ${FULL_IMAGE_PATH}
-                        docker push ${FULL_IMAGE_LATEST}
+                        // Debug: Verify the replacement in the console logs
+                        echo "--- VERIFICATION: values.yaml CONTENT ---"
+                        sh "grep 'tag:' ${chartName}/values.yaml"
+
+                        // 3. Package the Helm Chart
+                        // Synchronize Chart Version and App Version with the Docker Tag
+                        sh "helm package ${chartName} --version ${DOCKER_TAG} --app-version ${DOCKER_TAG}"
                         
-                        echo "✅ Docker images pushed successfully!"
-                        
-                        # Logout
-                        docker logout ${HARBOR_REGISTRY_URL}
-                        '''
+                        // 4. Push the OCI Chart to Harbor
+                        echo "INFO: Pushing Helm Chart to OCI Registry..."
+                        sh "helm push ${chartName}-${DOCKER_TAG}.tgz oci://${HARBOR_DOMAIN_NAME}/template-nlb"
                     }
                 }
+                
+                // Logout Helm Client
+                sh "helm registry logout ${HARBOR_DOMAIN_NAME}"
             }
         }
-        
-        stage('Prepare Helm Chart') {
-            steps {
-                echo "📦 Chuẩn bị Helm Chart..."
-                sh '''
-                set -e
-                
-                # Clean and create build directory
-                rm -rf ${HELM_BUILD_DIR}
-                mkdir -p ${HELM_BUILD_DIR}/${HELM_CHART_NAME}
-                
-                # Copy Helm files from source code
-                if [ -d "${HELM_SOURCE_DIR}" ]; then
-                    echo "✅ Found helm directory in source code"
-                    
-                    # Copy all files
-                    cp -r ${HELM_SOURCE_DIR}/* ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/
-                    
-                    echo "✓ Copied Helm chart from source"
-                else
-                    echo "⚠️ No helm directory found, creating basic structure..."
-                    
-                    # Create basic structure
-                    mkdir -p ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/templates
-                    
-                    # Create Chart.yaml
-                    cat > ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/Chart.yaml <<'EOFCHART'
-apiVersion: v2
-name: ai-network-config-helper
-description: A Helm chart for AI Network Config Helper
-type: application
-version: 1.0.0
-appVersion: "1.0.0"
-EOFCHART
-                    
-                    # Create values.yaml
-                    cat > ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/values.yaml <<EOFVALUES
-replicaCount: 1
+    } // End of stages
 
-image:
-  repository: ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}
-  pullPolicy: Always
-  tag: "latest"
-
-imagePullSecrets:
-  - name: harbor-registry-secret
-
-service:
-  type: ClusterIP
-  port: 3000
-  targetPort: 3000
-
-ingress:
-  enabled: false
-
-resources:
-  limits:
-    cpu: 500m
-    memory: 512Mi
-  requests:
-    cpu: 250m
-    memory: 256Mi
-
-autoscaling:
-  enabled: false
-
-nodeSelector: {}
-tolerations: []
-affinity: {}
-EOFVALUES
-                    
-                    # Create deployment.yaml
-                    cat > ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/templates/deployment.yaml <<'EOFDEPLOY'
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{ include "ai-network-config-helper.fullname" . }}
-  labels:
-    {{- include "ai-network-config-helper.labels" . | nindent 4 }}
-spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
-  {{- end }}
-  selector:
-    matchLabels:
-      {{- include "ai-network-config-helper.selectorLabels" . | nindent 6 }}
-  template:
-    metadata:
-      labels:
-        {{- include "ai-network-config-helper.selectorLabels" . | nindent 8 }}
-    spec:
-      {{- with .Values.imagePullSecrets }}
-      imagePullSecrets:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      containers:
-      - name: {{ .Chart.Name }}
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-        imagePullPolicy: {{ .Values.image.pullPolicy }}
-        ports:
-        - name: http
-          containerPort: {{ .Values.service.targetPort }}
-          protocol: TCP
-        resources:
-          {{- toYaml .Values.resources | nindent 12 }}
-EOFDEPLOY
-                    
-                    # Create service.yaml
-                    cat > ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/templates/service.yaml <<'EOFSERVICE'
-apiVersion: v1
-kind: Service
-metadata:
-  name: {{ include "ai-network-config-helper.fullname" . }}
-  labels:
-    {{- include "ai-network-config-helper.labels" . | nindent 4 }}
-spec:
-  type: {{ .Values.service.type }}
-  ports:
-    - port: {{ .Values.service.port }}
-      targetPort: http
-      protocol: TCP
-      name: http
-  selector:
-    {{- include "ai-network-config-helper.selectorLabels" . | nindent 4 }}
-EOFSERVICE
-                    
-                    # Create _helpers.tpl
-                    cat > ${HELM_BUILD_DIR}/${HELM_CHART_NAME}/templates/_helpers.tpl <<'EOFHELPERS'
-{{- define "ai-network-config-helper.fullname" -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" }}
-{{- end }}
-
-{{- define "ai-network-config-helper.labels" -}}
-helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
-app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.kubernetes.io/version: {{ .Chart.AppVersion }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{- define "ai-network-config-helper.selectorLabels" -}}
-app.kubernetes.io/name: {{ .Chart.Name }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
-EOFHELPERS
-                    
-                    echo "✅ Created basic Helm chart structure"
-                fi
-                
-                # List structure
-                echo "📂 Helm chart structure:"
-                find ${HELM_BUILD_DIR}/${HELM_CHART_NAME} -type f
-                '''
-            }
-        }
-        
-        stage('Update Helm Chart Metadata') {
-            steps {
-                echo "⚙️ Cập nhật Helm Chart metadata..."
-                sh '''
-                set -e
-                
-                CHART_PATH="${HELM_BUILD_DIR}/${HELM_CHART_NAME}"
-                
-                # Update Chart.yaml with correct version
-                echo "📝 Updating Chart.yaml..."
-                sed -i.bak "s|^version:.*|version: ${HELM_CHART_VERSION}|g" ${CHART_PATH}/Chart.yaml
-                sed -i.bak "s|^appVersion:.*|appVersion: \\"${IMAGE_TAG}\\"|g" ${CHART_PATH}/Chart.yaml
-                rm -f ${CHART_PATH}/Chart.yaml.bak
-                
-                # Update values.yaml with new image tag
-                echo "🔄 Updating values.yaml with image tag: ${IMAGE_TAG}"
-                sed -i.bak "s|tag:.*|tag: \\"${IMAGE_TAG}\\"|g" ${CHART_PATH}/values.yaml
-                sed -i.bak "s|repository:.*|repository: ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}|g" ${CHART_PATH}/values.yaml
-                rm -f ${CHART_PATH}/values.yaml.bak
-                
-                # Display Chart.yaml
-                echo "📄 Chart.yaml content:"
-                cat ${CHART_PATH}/Chart.yaml
-                
-                echo ""
-                echo "📄 Image configuration in values.yaml:"
-                grep -A 3 "^image:" ${CHART_PATH}/values.yaml || true
-                '''
-            }
-        }
-        
-        stage('Validate and Package Helm Chart') {
-            steps {
-                echo "🔍 Validate và Package Helm Chart..."
-                sh '''
-                set -e
-                
-                cd ${HELM_BUILD_DIR}
-                
-                # Lint the chart
-                echo "🔍 Linting Helm chart..."
-                helm lint ${HELM_CHART_NAME}
-                
-                # Package the chart
-                echo "📦 Packaging Helm chart..."
-                helm package ${HELM_CHART_NAME}
-                
-                # List packaged chart
-                echo "📦 Packaged chart:"
-                ls -lh *.tgz
-                
-                # Verify package content
-                echo "📋 Chart package content:"
-                tar -tzf ${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz | head -20
-                '''
-            }
-        }
-        
-        stage('Push Helm Chart to Harbor OCI Registry') {
-            steps {
-                echo "🚀 Push Helm Chart lên Harbor OCI Registry..."
-                withCredentials([usernamePassword(
-                    credentialsId: "${HARBOR_CREDENTIALS_ID}",
-                    usernameVariable: 'HARBOR_USER',
-                    passwordVariable: 'HARBOR_PASS'
-                )]) {
-                    sh '''
-                    set -e
-                    
-                    cd ${HELM_BUILD_DIR}
-                    
-                    CHART_PACKAGE="${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz"
-                    OCI_REGISTRY="oci://${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}"
-                    
-                    # Verify package exists
-                    if [ ! -f "$CHART_PACKAGE" ]; then
-                        echo "❌ Chart package not found: $CHART_PACKAGE"
-                        ls -la
-                        exit 1
-                    fi
-                    
-                    echo "📦 Chart package: $CHART_PACKAGE"
-                    echo "🎯 Target registry: $OCI_REGISTRY"
-                    
-                    # Login to Harbor OCI Registry
-                    echo "🔐 Logging in to Harbor OCI Registry..."
-                    echo $HARBOR_PASS | helm registry login ${HARBOR_REGISTRY_URL} \\
-                        --username $HARBOR_USER \\
-                        --password-stdin
-                    
-                    # Push to Harbor OCI Registry
-                    echo "⬆️ Pushing Helm chart to Harbor..."
-                    helm push $CHART_PACKAGE $OCI_REGISTRY
-                    
-                    echo "✅ Helm chart pushed successfully!"
-                    echo "📍 Chart location: ${OCI_REGISTRY}/${HELM_CHART_NAME}:${HELM_CHART_VERSION}"
-                    
-                    # Logout
-                    helm registry logout ${HARBOR_REGISTRY_URL}
-                    '''
-                }
-            }
-        }
-        
-        stage('Verify Helm Chart in Harbor') {
-            steps {
-                echo "✅ Verify Helm Chart trong Harbor..."
-                withCredentials([usernamePassword(
-                    credentialsId: "${HARBOR_CREDENTIALS_ID}",
-                    usernameVariable: 'HARBOR_USER',
-                    passwordVariable: 'HARBOR_PASS'
-                )]) {
-                    sh '''
-                    set -e
-                    
-                    OCI_CHART="oci://${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${HELM_CHART_NAME}"
-                    
-                    echo "🔍 Verifying chart in Harbor..."
-                    echo "📍 Chart: ${OCI_CHART}:${HELM_CHART_VERSION}"
-                    
-                    # Login again
-                    echo $HARBOR_PASS | helm registry login ${HARBOR_REGISTRY_URL} \\
-                        --username $HARBOR_USER \\
-                        --password-stdin
-                    
-                    # Try to pull the chart to verify
-                    echo "📥 Testing pull from Harbor..."
-                    helm pull ${OCI_CHART} --version ${HELM_CHART_VERSION} --destination /tmp
-                    
-                    if [ -f "/tmp/${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz" ]; then
-                        echo "✅ Chart verified successfully in Harbor!"
-                        rm -f /tmp/${HELM_CHART_NAME}-${HELM_CHART_VERSION}.tgz
-                    else
-                        echo "⚠️ Chart verification failed!"
-                    fi
-                    
-                    # Logout
-                    helm registry logout ${HARBOR_REGISTRY_URL}
-                    '''
-                }
-            }
-        }
-    }
-    
+    // Post-build Actions
     post {
+        always {
+            echo '--------------------------------------------------------'
+            echo "🏁 Pipeline finished. Build Version: ${DOCKER_TAG}"
+            echo '--------------------------------------------------------'
+        }
         success {
-            echo """
-            ✅ ============================================
-            ✅ PIPELINE HOÀN TẤT THÀNH CÔNG!
-            ✅ ============================================
-            
-            📦 DOCKER IMAGE:
-            └─ ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}:${IMAGE_TAG}
-            └─ ${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${IMAGE_NAME}:latest
-            
-            📦 HELM CHART (OCI):
-            └─ oci://${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}/${HELM_CHART_NAME}:${HELM_CHART_VERSION}
-            
-            🎯 ARGOCD APPLICATION:
-            └─ Chart: ${HELM_CHART_NAME}
-            └─ RepoURL: oci://${HARBOR_REGISTRY_URL}/${HARBOR_PROJECT}
-            └─ Version: ${HELM_CHART_VERSION}
-            
-            📝 NEXT STEPS:
-            1. Tạo/Update ArgoCD Application với version: ${HELM_CHART_VERSION}
-            2. Hoặc dùng targetRevision: "1.0.*" để auto-update
-            3. Sync ArgoCD để deploy lên K8s
-            
-            ✅ ============================================
-            """
+            echo '✅ SUCCESS: Pipeline completed successfully! Artifacts are ready in Harbor.'
         }
         failure {
-            echo """
-            ❌ ============================================
-            ❌ PIPELINE THẤT BẠI!
-            ❌ ============================================
-            🔍 Vui lòng kiểm tra logs ở stage bị lỗi
-            ❌ ============================================
-            """
+            echo '❌ FAILED: Pipeline encountered an error.'
+            echo '👉 Please check the Console Output above for debugging details.'
         }
-        always {
-            echo "🧹 Dọn dẹp..."
-            sh '''
-                # Cleanup docker images
-                docker image prune -f || true
-                
-                # Cleanup build directory
-                rm -rf ${HELM_BUILD_DIR} || true
-                
-                # Cleanup temp files
-                rm -f /tmp/${HELM_CHART_NAME}-*.tgz || true
-            '''
-        }
-    }
+    } 
 }
