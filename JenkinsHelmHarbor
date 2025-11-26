@@ -82,7 +82,7 @@ pipeline {
         
         stage('Update GitOps Repository') {
             steps {
-                echo "📝 Cập nhật GitOps Repository với image tag mới..."
+                echo "📝 Cập nhật GitOps Repository với Helm templates và image tag mới..."
                 withCredentials([sshUserPrivateKey(
                     credentialsId: "${GITOPS_SSH_KEY_ID}",
                     keyFileVariable: 'SSH_KEY',
@@ -109,12 +109,46 @@ pipeline {
                     cd gitops-repo
                     git checkout ${GITOPS_REPO_BRANCH}
                     
-                    # Kiểm tra xem Helm chart đã tồn tại chưa
-                    if [ ! -d "${HELM_CHART_PATH}" ]; then
-                        echo "⚠️ Helm chart chưa tồn tại, tạo structure mới..."
-                        mkdir -p ${HELM_CHART_PATH}/templates
+                    # Tạo thư mục Helm nếu chưa có
+                    mkdir -p ${HELM_CHART_PATH}/templates
+                    
+                    # ===== COPY HELM TEMPLATES TỪ SOURCE CODE =====
+                    echo "📋 Copying Helm templates from source code..."
+                    
+                    # Copy toàn bộ thư mục helm từ WORKSPACE (source code đã checkout)
+                    if [ -d "${WORKSPACE}/helm" ]; then
+                        echo "✅ Found helm directory in source code"
                         
-                        # Tạo Chart.yaml
+                        # Copy Chart.yaml nếu có
+                        if [ -f "${WORKSPACE}/helm/Chart.yaml" ]; then
+                            cp ${WORKSPACE}/helm/Chart.yaml ${HELM_CHART_PATH}/Chart.yaml
+                            echo "✓ Copied Chart.yaml"
+                        fi
+                        
+                        # Copy values.yaml nếu có (sẽ update image tag sau)
+                        if [ -f "${WORKSPACE}/helm/values.yaml" ]; then
+                            cp ${WORKSPACE}/helm/values.yaml ${HELM_CHART_PATH}/values.yaml
+                            echo "✓ Copied values.yaml"
+                        fi
+                        
+                        # Copy toàn bộ templates/
+                        if [ -d "${WORKSPACE}/helm/templates" ]; then
+                            cp -r ${WORKSPACE}/helm/templates/* ${HELM_CHART_PATH}/templates/
+                            echo "✓ Copied all templates"
+                        fi
+                        
+                        # Copy các file khác nếu có (.helmignore, README.md, etc)
+                        for file in .helmignore README.md NOTES.txt; do
+                            if [ -f "${WORKSPACE}/helm/$file" ]; then
+                                cp ${WORKSPACE}/helm/$file ${HELM_CHART_PATH}/
+                                echo "✓ Copied $file"
+                            fi
+                        done
+                        
+                    else
+                        echo "⚠️ Không tìm thấy thư mục helm/ trong source code"
+                        echo "⚠️ Sẽ tạo Helm chart structure cơ bản..."
+                        
                         cat > ${HELM_CHART_PATH}/Chart.yaml <<EOF
 apiVersion: v2
 name: ai-network-config-helper
@@ -238,16 +272,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 EOF
                         
-                        echo "✅ Đã tạo Helm chart structure"
+                        echo "✅ Đã tạo Helm chart structure cơ bản"
+                        fi
                     fi
                     
-                    # Copy custom templates từ source code nếu có
-                    if [ -d "${WORKSPACE}/helm/templates" ]; then
-                        echo "📋 Copying custom templates from source..."
-                        cp -rf ${WORKSPACE}/helm/templates/* ${HELM_CHART_PATH}/templates/
-                    fi
-                    
-                    # Cập nhật image tag trong values.yaml
+                    # ===== CẬP NHẬT IMAGE TAG =====
                     echo "🔄 Updating image tag to: ${IMAGE_TAG}"
                     sed -i "s|tag:.*|tag: \\"${IMAGE_TAG}\\"|g" ${HELM_CHART_PATH}/${HELM_VALUES_FILE}
                     
